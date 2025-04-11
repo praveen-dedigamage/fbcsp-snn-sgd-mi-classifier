@@ -13,6 +13,8 @@
 **/*.arff
 **/*.joblib
 **/*.pkl
+**/*.set
+**/*.fdt
 
 # ======================
 # NOTEBOOK CHECKPOINTS
