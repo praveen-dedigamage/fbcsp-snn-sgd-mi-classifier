@@ -1,29 +1,69 @@
-# Data and models (we're excluding these for now)
-*.npy
-*.npz
-*.h5
-*.pt
-*.pth
-*.mat
-*.csv
-*.tsv
-*.gdf
+# ======================
+# DATA & MODEL FILES (anywhere in project)
+# ======================
+**/*.npy
+**/*.npz
+**/*.h5
+**/*.pt
+**/*.pth
+**/*.mat
+**/*.csv
+**/*.tsv
+**/*.sav
+**/*.arff
+**/*.joblib
+**/*.pkl
 
-# Notebooks and checkpoints
-.ipynb_checkpoints/
+# ======================
+# NOTEBOOK CHECKPOINTS
+# ======================
+**/.ipynb_checkpoints/
 
-# Python cache
+# ======================
+# PYTHON CACHE / BYTECODE
+# ======================
 __pycache__/
 *.py[cod]
 *.so
 
-# Virtual environments
+# ======================
+# VIRTUAL ENVIRONMENTS
+# ======================
 env/
 venv/
 .venv/
 
-# IDE and system files
+# ======================
+# LOGS & CHECKPOINTS
+# ======================
+logs/
+**/*.log
+checkpoints/
+runs/               # for TensorBoard
+wandb/
+lightning_logs/
+
+# ======================
+# TEMPORARY EXPORTS & ARCHIVES
+# ======================
+*.zip
+*.tar
+*.gz
+*.rar
+*.7z
+*.tmp
+*.bak
+
+# ======================
+# IDE / EDITOR / TOOL SETTINGS
+# ======================
 .vscode/
 .idea/
+.spyderproject
+.spyproject
+
+# ======================
+# OS-SPECIFIC FILES
+# ======================
 .DS_Store
 Thumbs.db
