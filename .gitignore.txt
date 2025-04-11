@@ -1,0 +1,29 @@
+# Data and models (we're excluding these for now)
+*.npy
+*.npz
+*.h5
+*.pt
+*.pth
+*.mat
+*.csv
+*.tsv
+*.gdf
+
+# Notebooks and checkpoints
+.ipynb_checkpoints/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*.so
+
+# Virtual environments
+env/
+venv/
+.venv/
+
+# IDE and system files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
