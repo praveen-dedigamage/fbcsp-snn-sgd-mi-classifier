@@ -13,8 +13,11 @@ cd('C:/Users/USER/Documents/eeglab_current/eeglab2025.0.0');
 cd(original_dir);
 
 %% Step 4: Load the GDF file
-EEG = pop_biosig('A01T.gdf');
-EEG.setname = 'A01T';
+subject = 'A01T';  % You can change this dynamically
+filename = ['Dataset/' subject '.gdf'];
+
+EEG = pop_biosig(filename);
+EEG.setname = subject;
 
 %% Step 5: Select only EEG channels (exclude EOG)
 EEG = pop_select(EEG, 'channel', 1:22);
@@ -66,8 +69,9 @@ if ~isfield(EEG, 'data')
 end
 
 % Save the cleaned, epoched EEG
-EEG.setname = 'Cleaned_Epoched_EEG_A01T';
-EEG = pop_saveset(EEG, 'filename', 'Cleaned_Epoched_EEG_A01T.set');
+EEG.setname = ['Cleaned_Epoched_EEG_' subject];
+save_filename = ['Dataset/Cleaned_Epoched_EEG_' subject '.set'];
+EEG = pop_saveset(EEG, 'filename', save_filename);
 
 %% Step 13: Extract data and labels
 X = EEG.data;  % Shape: [channels × samples × trials]
@@ -88,4 +92,5 @@ for i = 1:EEG.trials
 end
 
 %% Step 14: Save data and labels to a .mat file
-save('EEG_python_ready_A01T.mat', 'X', 'y', '-v7.3');
+filename = ['Dataset/EEG_python_ready_' subject '.mat'];
+save(filename, 'X', 'y', '-v7.3');
