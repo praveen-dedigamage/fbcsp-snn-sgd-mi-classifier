@@ -2,30 +2,28 @@
 % ICA Cleaning Script for Raw_Evaluation_BCIIV_2a_EEG.gdf
 % -----------------------------------------------------
 
-%% Step 1: Save current working directory
-original_dir = pwd;
-
-%% Step 2: Switch to EEGLAB directory and run EEGLAB
-cd('C:/Users/USER/Documents/eeglab_current/eeglab2025.0.0');
+%% Step 1: Run EEGLAB
 [ALLEEG, EEG, CURRENTSET, ALLCOM] = eeglab;
 
-%% Step 3: Return to your data directory
-cd(original_dir);
+%% Step 2: Load the GDF file
+subjectno = '1'
+sessionType = 'E'
+subject = ['A0' subjectno sessionType];   % You can change this dynamically
+filename = ['../Dataset/' subject '.gdf'];
 
-%% Step 4: Load the GDF file
-EEG = pop_biosig('Dataset/A01E.gdf');
-EEG.setname = 'A01E';
+EEG = pop_biosig(filename);
+EEG.setname = subject;
 
-%% Step 5: Select only EEG channels (exclude EOG)
+%% Step 3: Select only EEG channels (exclude EOG)
 EEG = pop_select(EEG, 'channel', 1:22);
 
-%% Step 6: Run ICA (use PCA=20 for speed)
+%% Step 4: Run ICA (use PCA=20 for speed)
 EEG = pop_runica(EEG, 'extended', 1, 'pca', 20);
 
-%% Step 7: Reject the first 3 ICA components
+%% Step 5: Reject the first 3 ICA components
 EEG = pop_subcomp(EEG, [1 2 3], 0);  % Back-project and clean
 
-%% Step 8: 
+%% Step 6: 
 % Detect trial indices to reject based on edftype sequence
 % Fix event type issue (convert 'edftype' to string 'type')
 
@@ -45,13 +43,13 @@ for i = 1:length(EEG.event)
 end
 fprintf('Marked %d trials for rejection (due to 1023 after 768).\n', length(rejected_trial_indices));
 
-%% Step 9: Epoch around motor imagery cues (2.8 to 6.0 s)
+%% Step 7: Epoch around motor imagery cues (2.8 to 6.0 s)
 EEG = pop_epoch(EEG, {'768'}, [2.8, 6.0]);
 
-%% Step 10: Baseline correction using pre-stimulus (2.8 to 3 s)
+%% Step 8: Baseline correction using pre-stimulus (2.8 to 3 s)
 EEG = pop_rmbase(EEG, [2800 3000]);
 
-%% Step 11: Remove bad trials based on rejected_trial_indices
+%% Step 9: Remove bad trials based on rejected_trial_indices
 if ~isempty(rejected_trial_indices)
     EEG = pop_select(EEG, 'notrial', rejected_trial_indices);
     fprintf('Removed %d bad trials after epoching.\n', length(rejected_trial_indices));
@@ -59,26 +57,30 @@ else
     fprintf('No bad trials to remove after epoching.\n');
 end
 
-%% Step 12: Save the cleaned, epoched EEG
+%% Step 10: Save the cleaned, epoched EEG
 % Check EEG structure before saving
 if ~isfield(EEG, 'data')
     error('❌ EEG struct is invalid — check pop_epoch or pop_rmbase earlier.');
 end
 
 % Save the cleaned, epoched EEG
-EEG.setname = 'Cleaned_Epoched_EEG_A01E';
-EEG = pop_saveset(EEG, 'filename', 'Dataset/Cleaned_Epoched_EEG_A01E.set');
+EEG.setname = ['Cleaned_Epoched_EEG_' subject];
+save_filename = ['../Dataset/Cleaned_Epoched_EEG_' subject '.set'];
+EEG = pop_saveset(EEG, 'filename', save_filename);
 
-%% Step 13: Extract data and labels
+%% Step 11: Extract data and labels
 X = EEG.data;  % Shape: [channels × samples × trials]
 
 % Transpose X to [trials × samples × channels] for Python compatibility
 X = permute(X, [3, 2, 1]);
 
 % Extract labels from event types
-y = load('A01E_L.mat').classlabel;
+filename = ['../Dataset/' subject '_L.mat'];
+y = load(filename).classlabel;
 y(rejected_trial_indices) = [];
 
-%% Step 14: Save data and labels to a .mat file
-save('Dataset/EEG_python_ready_A01E.mat', 'X', 'y', '-v7.3');
+%% Step 12: Save data and labels to a .mat file
+filename = ['../Dataset/EEG_python_ready_' subject '.mat'];
+save(filename, 'X', 'y', '-v7.3');
+
 
