@@ -108,43 +108,20 @@ def PW_CSP(X, y, num_classes=4):
     return Ws
 
 
-def apply_CSP_trials(W, trials, m=None, debug=False):
+def apply_CSP_trials(W, trials):
     """
     Apply CSP filter W to multiple EEG trials.
 
     Parameters:
-        W: CSP projection matrix (n_filters x n_channels)
-        trials: EEG trials, shape (n_trials x n_samples x n_channels) or (n_trials x n_channels x n_samples)
-        m: Optional number of spatial filters to select (e.g., top m from both sides)
-        debug: If True, print debug info
+        W: CSP projection matrix (channels x channels)
+        trials: EEG trials (trials x channels x samples)
+        m: Number of spatial filters to select from each side
 
     Returns:
-        Enhanced trials (n_trials x selected_filters x n_samples)
+        Enhanced trials using CSP (trials x selected_filters x samples)
     """
-
-    # Ensure correct shape: [trials, channels, samples]
-    if trials.shape[1] < trials.shape[2]:
-        # Probably in shape (trials, samples, channels), so transpose
-        trials = trials.transpose(0, 2, 1)
-
-    n_trials, n_channels, n_samples = trials.shape
-
-    if debug:
-        print(f"Trials shape after check: {trials.shape}")
-        print(f"CSP filter shape: {W.shape}")
-
-    # Select top m spatial filters (optional)
-    if m is not None:
-        W = np.concatenate([W[:m], W[-m:]], axis=0)  # top and bottom m filters
-
-    # Apply CSP to each trial
     enhanced_trials = np.array([np.dot(W, trial) for trial in trials])
-
-    if debug:
-        print(f"Enhanced trial shape: {enhanced_trials.shape}")
-
     return enhanced_trials
-
 
 def plot_overlapping_class_trial_variances(enhanced_trials, y, classes=[1, 2, 3, 4], colors=['blue', 'red', 'green', 'orange'], alpha=0.6):
     """
@@ -331,35 +308,32 @@ def plot_spike_lines_per_class(encoded_tensor, Y):
     plt.grid(True)
     plt.show()
     
-def prepare_data(encoded_train_tensor, encoded_test_tensor, y_train, y_test, test_size=0.2, random_state=42):
+def prepare_data(encoded_tensor, y, test_size=0.2, random_state=42):
     # Reshape encoded_tensor for SNN input: [time, batch, features]
-    X_train = encoded_train_tensor.permute(1, 0, 2)  # [time, trials, features]
-    X_test = encoded_test_tensor.permute(1, 0, 2)  # [time, trials, features]
-    y_train = torch.tensor(y_train) - 1  # Adjust labels to be 0-based
-    y_test = torch.tensor(y_test) - 1  # Adjust labels to be 0-based
+    encoded_tensor = encoded_tensor.permute(1, 0, 2)  # [time, trials, features]
+    Y = torch.tensor(y) - 1  # Adjust labels to be 0-based
 
-    return X_train, X_test, y_train, y_test
+    # Train/test split
+    train_indices, test_indices = train_test_split(torch.arange(encoded_tensor.shape[1]), test_size=test_size, stratify=Y, random_state=random_state)
 
-def create_ideal_spikes(y, num_classes, num_steps, batch_size, spike_value=1.0):
-    """
-    Creates ideal spike trains:
-    - Correct class neuron: spike_value at every timestep
-    - Others: 0
-    """
-    ideal_spikes = torch.zeros((num_steps, batch_size, num_classes))
+    X_train = encoded_tensor[:, train_indices, :]
+    X_test = encoded_tensor[:, test_indices, :]
+    y_train = Y[train_indices]
+    y_test = Y[test_indices]
+
+    output_size = len(torch.unique(Y))
+
+    return X_train, X_test, y_train, y_test, output_size
+
+def create_random_ideal_spikes(y, num_classes, num_steps, batch_size, target_strength=1.0, distractor_strength=0.1):
+    ideal_spikes = distractor_strength * torch.rand((num_steps, batch_size, num_classes))
     for i in range(batch_size):
-        ideal_spikes[:, i, y[i]] = spike_value
+        class_idx = y[i]
+        ideal_spikes[:, i, class_idx] = target_strength * torch.bernoulli(torch.full((num_steps,), 0.9))
     return ideal_spikes
 
 
-def train_with_ideal_spikes(model, X_train, y_train, X_val, y_val, LR=1e-3, epochs=10):
-    
-    
-    X_train = X_train.float().to(next(model.parameters()).device)
-    X_val = X_val.float().to(next(model.parameters()).device)
-    y_train = y_train.to(next(model.parameters()).device)
-    y_val = y_val.to(next(model.parameters()).device)
-    
+def train(model, X_train, y_train, X_val, y_val, LR = 1e-3, epochs=10):
     model.train()
     optimizer = torch.optim.Adam(model.parameters(), LR)
     loss_fn = nn.MSELoss()
@@ -373,20 +347,14 @@ def train_with_ideal_spikes(model, X_train, y_train, X_val, y_val, LR=1e-3, epoc
     num_steps = X_train.shape[0]
 
     for epoch in range(epochs):
-        # Forward
+        # Training
         optimizer.zero_grad()
         output_spikes = model(X_train)
-
-        # Create ideal spike pattern
-        ideal_spikes = create_ideal_spikes(y_train, num_classes, num_steps, X_train.shape[1])
-        ideal_spikes = ideal_spikes.to(output_spikes.device)
-
-        # Compute loss (MSE between predicted and ideal spike trains)
+        ideal_spikes = create_random_ideal_spikes(y_train, num_classes, num_steps, X_train.shape[1]).to(output_spikes.device)
         loss = loss_fn(output_spikes, ideal_spikes)
         loss.backward()
         optimizer.step()
 
-        # Accuracy (based on summed spikes)
         output_sum = output_spikes.sum(dim=0)
         predicted = torch.argmax(output_sum, dim=1)
         acc = accuracy_score(y_train.cpu(), predicted.cpu())
@@ -394,7 +362,7 @@ def train_with_ideal_spikes(model, X_train, y_train, X_val, y_val, LR=1e-3, epoc
         loss_list.append(loss.item())
         accuracy_list.append(acc)
 
-        # Validation
+        # Evaluation
         model.eval()
         with torch.no_grad():
             val_output_spikes = model(X_val)
@@ -402,7 +370,7 @@ def train_with_ideal_spikes(model, X_train, y_train, X_val, y_val, LR=1e-3, epoc
             val_predicted = torch.argmax(val_output_sum, dim=1)
             val_acc = accuracy_score(y_val.cpu(), val_predicted.cpu())
 
-            val_ideal = create_ideal_spikes(y_val, num_classes, num_steps, X_val.shape[1]).to(val_output_spikes.device)
+            val_ideal = create_random_ideal_spikes(y_val, num_classes, num_steps, X_val.shape[1]).to(val_output_spikes.device)
             val_loss = loss_fn(val_output_spikes, val_ideal)
 
             val_loss_list.append(val_loss.item())
@@ -486,26 +454,15 @@ if __name__ == "__main__":
     # Define Path
     base_directory = r'C:\Users\USER\Desktop\Extending the thesis\Dataset\BCICIV_2a_gdf'
     SubjectNo = input("Please Enter Subject No : ")
-    
-    filename = fr"new_A0{SubjectNo}E"
-    file_path = fr'{base_directory}\{filename}.pkl'
-    
-    with open(file_path, "rb") as f:
-        data = pickle.load(f)
-        
-    test_eeg_signals_loaded =  data["eeg_signals"]
-    test_trial_labels_loaded = data["trial_labels"]
-        
     filename = fr"new_A0{SubjectNo}T"  # Change dynamically
     file_path = fr'{base_directory}\{filename}.pkl'
 
+    # Load data
     with open(file_path, "rb") as f:
         data = pickle.load(f)
 
-    train_eeg_signals_loaded = data["eeg_signals"]
-    train_trial_labels_loaded = data["trial_labels"]
-    
-    train_eeg_signals_loaded, test_eeg_signals_loaded, train_trial_labels_loaded, test_trial_labels_loaded = train_test_split(train_eeg_signals_loaded, train_trial_labels_loaded, test_size=0.3, random_state=42, stratify=train_trial_labels_loaded)
+    eeg_signals_loaded = data["eeg_signals"]
+    trial_labels_loaded = data["trial_labels"]
 
     # Define frequency bands for FBCSP
     #freq_bands = [(4, 8), (8, 12), (12, 16), (16, 20), (20, 24), (24, 28), (28, 32)]
@@ -513,77 +470,43 @@ if __name__ == "__main__":
     freq_bands = [(4, 30)]
 
     # Apply filtering for each frequency band
-    train_filtered_signals = {band: bandpass_filter(clip_trials(train_eeg_signals_loaded, 125, 750), band[0], band[1]) for band in freq_bands}
-    test_filtered_signals = {band: bandpass_filter(clip_trials(test_eeg_signals_loaded, 125, 750), band[0], band[1]) for band in freq_bands}
+    filtered_signals = {band: bandpass_filter(clip_trials(eeg_signals_loaded, 125, 750), band[0], band[1]) for band in freq_bands}
     
-    X_Filtered_train = np.concatenate(list(train_filtered_signals.values()), axis=-1)
-    X_Filtered_test = np.concatenate(list(test_filtered_signals.values()), axis=-1)
+    X = np.concatenate(list(filtered_signals.values()), axis=-1)
+    y = np.asarray(trial_labels_loaded).flatten()
     
-    trial_variances = np.var(X_Filtered_test, axis=(1, 2))  # Variance across time and channels
-    threshold = np.median(trial_variances) * 2  # or any manually chosen threshold like 50.0
-    good_indices = np.where(trial_variances < threshold)[0]
-    
-    X_Filtered_test = X_Filtered_test[good_indices]
-    
-    X = np.concatenate([X_Filtered_train, X_Filtered_test], axis=0)
-    
-    y_train = np.asarray(train_trial_labels_loaded).flatten()
-    y_test = np.asarray(test_trial_labels_loaded).flatten()
-    y_test = y_test[good_indices]
-    y = np.concatenate([y_train, y_test], axis=0)
-        
-    unique_labels = np.unique(train_trial_labels_loaded)
-    
-    X_new_train, X_new_test, y_new_train, y_new_test = train_test_split(X, y, test_size=0.2, random_state=42, stratify=y)
-    
-    X_new_train = X_Filtered_train
-    X_new_test = X_Filtered_test
-    y_new_train = y_train
-    y_new_test = y_test
+    unique_labels = np.unique(trial_labels_loaded)
 
     # Compute CSP filters for each class
-    Ws = PW_CSP(X_new_train, y_new_train, num_classes=len(unique_labels))
+    Ws = PW_CSP(X, y, num_classes=len(unique_labels))
 
-
-    train_trials_to_enhance = X_new_train
-    test_trials_to_enhance = X_new_test
+    # Choose class to enhance trials for (example: class 1)
+    trials_to_enhance = X
     
-    enhanced_total_train_trials = []
-    enhanced_total_test_trials = []
+    total_enhanced_trials = []
     
     for key in Ws:
         print(key)
         
         W = Ws[key]
         
-        enhanced_trials_Train = apply_CSP_trials(W, train_trials_to_enhance)
-        enhanced_trials_Test = apply_CSP_trials(W, test_trials_to_enhance)
+        enhanced_trials = apply_CSP_trials(W, trials_to_enhance)
         
-        plot_overlapping_class_trial_variances(enhanced_trials_Train, y_new_train)
-        plot_overlapping_class_trial_variances(enhanced_trials_Test, y_new_test)
+        plot_overlapping_class_trial_variances(enhanced_trials, y)
         
-        enhanced_total_train_trials.append(enhanced_trials_Train)
-        enhanced_total_test_trials.append(enhanced_trials_Test)
+        total_enhanced_trials.append(enhanced_trials)
 
         
     # Flatten features for SNN input (e.g., variance over time per channel)
-    train_feature_list = [np.var(class_data, axis=1) for class_data in enhanced_total_train_trials]
-    test_feature_list = [np.var(class_data, axis=1) for class_data in enhanced_total_test_trials]
+    feature_list = [np.var(class_data, axis=1) for class_data in total_enhanced_trials]
+    combined_features = np.concatenate(feature_list, axis=1) 
     
-    combined_train_features = np.concatenate(train_feature_list, axis=1)
-    combined_test_features = np.concatenate(test_feature_list, axis=1)                                        
+    print("Feature tensor shape:", combined_features.shape)
     
-    print("Train Feature tensor shape:", combined_train_features.shape)
-    print("Test Feature tensor shape:", combined_test_features.shape)
-    
-    train_feature_tensor = torch.from_numpy(combined_train_features).float()
-    test_feature_tensor = torch.from_numpy(combined_test_features).float()
-    
-    N_Steps = 50
+    feature_tensor = torch.from_numpy(combined_features).float()
 
     # Rate encode the features
-    encoded_train_tensor = encode_feature_tensor(train_feature_tensor, num_steps=N_Steps)
-    encoded_test_tensor = encode_feature_tensor(test_feature_tensor, num_steps=N_Steps)
+    encoded_tensor = encode_feature_tensor(feature_tensor, num_steps=50)
     
     #plot_all_trials_by_class(encoded_tensor, y, limit=2)
     
@@ -592,17 +515,16 @@ if __name__ == "__main__":
     #plot_spike_lines_per_class(encoded_tensor, y)
     
     #Train/test split
-    X_train, X_test, y_train, y_test = prepare_data(encoded_train_tensor,encoded_test_tensor, y_new_train, y_new_test)
+    X_train, X_test, y_train, y_test, output_size = prepare_data(encoded_tensor, y)
     
     # Define model
-    input_size = X_train.shape[2]  
+    input_size = encoded_tensor.shape[2]  
     hidden_size = 128
-    output_size = 4
 
     model = SNNClassifier(input_size, hidden_size, output_size)
     
     # Train and evaluate
-    loss_list, accuracy_list, val_loss_list, val_accuracy_list = train_with_ideal_spikes(model, X_train, y_train, X_test, y_test, LR=1e-3, epochs=100)
+    loss_list, accuracy_list, val_loss_list, val_accuracy_list = train(model, X_train, y_train, X_test, y_test, LR=1e-3, epochs=100)
     plot_curves(loss_list, accuracy_list, val_loss_list, val_accuracy_list)
 
 
@@ -616,7 +538,7 @@ if __name__ == "__main__":
     
     plot_confusion_matrices(train_cm, test_cm, class_names=['Class 1', 'Class 2', 'Class 3', 'Class 4'])
     
-    save = input("Do you want to save the model and other data (Y/N) : ")
+    save = input("Do you want to save the model (Y/N) : ")
     
     if save == "Y" or save =="y":
         model_name = input("Enter a name for the model : ")
@@ -626,13 +548,10 @@ if __name__ == "__main__":
         "input_size": input_size,
         "hidden_size": hidden_size,
         "output_size": output_size,
-        "N_Steps": N_Steps,
         "X_train": X_train,
         "X_test": X_test,
         "y_train": y_train,
-        "y_test": y_test,
-        "train_filtered_signals": X_Filtered_train,
-        "test_filtered_signals": X_Filtered_test
+        "y_test": y_test
         }, f"{model_save_path}")
             
         print(f"Model and data saved to {model_save_path}")

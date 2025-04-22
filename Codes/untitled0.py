@@ -101,6 +101,8 @@ if __name__ == "__main__":
         X_val = file['X'][:]
         X_val = np.transpose(X_val, (2, 0, 1))
         y_val = file['y'][:].flatten()
+        
+    X_train, X_val, y_train, y_val = train_test_split(X_train, y_train, test_size=0.3, random_state=42, stratify=y_train)
 
     freq_bands = [(4, 30)]
     train_filtered = {band: bandpass_filter(X_train, band[0], band[1]) for band in freq_bands}
@@ -151,16 +153,24 @@ if __name__ == "__main__":
             self.lif2 = snn.Leaky(beta=0.9)
 
         def forward(self, x):
+            # x shape: (time, batch, input_dim)
+            spk2_rec = []
+        
             mem1 = self.lif1.init_leaky()
             mem2 = self.lif2.init_leaky()
-            spk2_rec = []
-            for step in range(x.size(0)):
+        
+            for step in range(x.size(0)):  # time
                 cur1 = self.fc1(x[step])
                 spk1, mem1 = self.lif1(cur1, mem1)
+        
                 cur2 = self.fc2(spk1)
                 spk2, mem2 = self.lif2(cur2, mem2)
+        
                 spk2_rec.append(spk2)
-            return torch.stack(spk2_rec)
+        
+            return torch.stack(spk2_rec)  # shape: [time, batch, output_dim]
+
+
 
     model = SNN(input_size=X_train_tensor.shape[1], hidden_size=128, output_size=4)
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
@@ -173,19 +183,21 @@ if __name__ == "__main__":
         return one_hot.unsqueeze(0).repeat(num_steps, 1, 1)
 
     print("\nTraining SNN...")
-    for epoch in range(num_epochs):
-        model.train()
-        total_loss = 0
-        for xb, yb in train_loader:
-            xb_spk = spikegen.rate(xb, num_steps=num_steps)
-            yb_spk = one_hot_spike_labels(yb, num_steps)
-            spk_out = model(xb_spk)
-            loss = loss_fn(spk_out, yb_spk)
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
-            total_loss += loss.item()
-        print(f"Epoch {epoch+1}/{num_epochs}, Loss: {total_loss:.4f}")
+    for xb, yb in train_loader:
+        xb_spk = spikegen.rate(xb, num_steps=num_steps)
+    
+        # 🛠️ Fix the label shape: should be [batch]
+        if yb.ndim > 1:
+            yb = yb.squeeze()  # This will reduce [batch, 1] or [1, batch] to [batch]
+    
+        spk_out = model(xb_spk)
+        loss = loss_fn(spk_out, yb)  # Use 1D labels here
+    
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+
+
 
     print("\nEvaluating SNN...")
     model.eval()
