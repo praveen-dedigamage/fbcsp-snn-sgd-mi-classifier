@@ -134,12 +134,10 @@ def train_with_ideal_spikes(model, X_train, y_train, X_val, y_val, LR=1e-3, epoc
     X_train, X_val = X_train.float(), X_val.float()
     y_train, y_val = y_train.long(), y_val.long()
     model.train()
-    optimizer = torch.optim.Adam(model.parameters(), LR)        #works
-    #optimizer = torch.optim.SGD(model.parameters(), lr=LR, momentum=0.9)
-    #optimizer = torch.optim.RMSprop(model.parameters(), lr=LR)
+    optimizer = torch.optim.Adam(model.parameters(), LR)                            #works
     optimizer = torch.optim.AdamW(model.parameters(), lr=LR, weight_decay=1e-2)     #works
-    optimizer = torch.optim.Adagrad(model.parameters(), lr=LR) #works
-    optimizer = torch.optim.Adadelta(model.parameters()) #works
+    optimizer = torch.optim.Adagrad(model.parameters(), lr=LR)                      #works
+    optimizer = torch.optim.Adadelta(model.parameters())                            #works
 
     loss_fn = nn.MSELoss()
 
