@@ -105,12 +105,15 @@ def encode_projected_signals_to_spikes(projected_data_dict, base_thresh=0.02, ad
 
 # -------------------------- SNN Model --------------------------
 class SNNClassifier(nn.Module):
-    def __init__(self, input_size, hidden_size, output_size):
+    def __init__(self, input_size, hidden_size, output_size, population_per_class=5):
         super().__init__()
+        self.population_per_class = population_per_class
+        self.total_outputs = output_size * population_per_class
+
         beta = 0.95
         self.fc1 = nn.Linear(input_size, hidden_size)
         self.lif1 = snn.Leaky(beta=beta, spike_grad=surrogate.fast_sigmoid())
-        self.fc2 = nn.Linear(hidden_size, output_size)
+        self.fc2 = nn.Linear(hidden_size, self.total_outputs)
         self.lif2 = snn.Leaky(beta=beta, spike_grad=surrogate.fast_sigmoid())
 
     def forward(self, x):
@@ -121,56 +124,70 @@ class SNNClassifier(nn.Module):
             spk1, mem1 = self.lif1(self.fc1(x[step]), mem1)
             spk2, mem2 = self.lif2(self.fc2(spk1), mem2)
             spk2_rec.append(spk2)
-        return torch.stack(spk2_rec)
+        return torch.stack(spk2_rec)  # shape: (time, batch, total_outputs)
 
 # -------------------------- Training and Evaluation --------------------------
-def create_ideal_spikes(y, num_classes, num_steps, batch_size, spike_value=1.0):
-    ideal_spikes = torch.zeros((num_steps, batch_size, num_classes))
+def create_sparse_temporal_population_spikes(y, num_classes, population_per_class, num_steps, batch_size, spike_prob=0.7):
+    total_outputs = num_classes * population_per_class
+    ideal_spikes = torch.zeros((num_steps, batch_size, total_outputs))
     for i in range(batch_size):
-        ideal_spikes[:, i, y[i]] = spike_value
+        class_idx = y[i]
+        start = class_idx * population_per_class
+        end = start + population_per_class
+        for t in range(num_steps):
+            for n in range(start, end):
+                if torch.rand(1).item() < spike_prob:
+                    ideal_spikes[t, i, n] = 1.0
     return ideal_spikes
 
+# -------------------------- Training and Evaluation --------------------------
 def train_with_ideal_spikes(model, X_train, y_train, X_val, y_val, LR=1e-3, epochs=10):
     X_train, X_val = X_train.float(), X_val.float()
     y_train, y_val = y_train.long(), y_val.long()
     model.train()
-    optimizer = torch.optim.Adam(model.parameters(), LR)                            #works
-    optimizer = torch.optim.AdamW(model.parameters(), lr=LR, weight_decay=1e-2)     #works
-    optimizer = torch.optim.Adagrad(model.parameters(), lr=LR)                      #works
-    optimizer = torch.optim.Adadelta(model.parameters())                            #works
 
+    optimizer = torch.optim.AdamW(model.parameters(), lr=LR, weight_decay=1e-2)
     loss_fn = nn.MSELoss()
 
     num_classes = len(torch.unique(y_train))
+    population_per_class = model.population_per_class
     num_steps = X_train.shape[0]
+
+    # Precompute ideal spike targets (FIXED over all epochs)
+    train_ideal_spikes = create_sparse_temporal_population_spikes(y_train, num_classes, population_per_class, num_steps, X_train.shape[1])
+    val_ideal_spikes = create_sparse_temporal_population_spikes(y_val, num_classes, population_per_class, num_steps, X_val.shape[1])
 
     for epoch in range(epochs):
         optimizer.zero_grad()
         output_spikes = model(X_train)
-        ideal_spikes = create_ideal_spikes(y_train, num_classes, num_steps, X_train.shape[1])
-        loss = loss_fn(output_spikes, ideal_spikes)
+        loss = loss_fn(output_spikes, train_ideal_spikes)
         loss.backward()
         optimizer.step()
 
         output_sum = output_spikes.sum(dim=0)
-        predicted = torch.argmax(output_sum, dim=1)
+        predicted = torch.argmax(output_sum.view(X_train.shape[1], num_classes, population_per_class).sum(dim=2), dim=1)
         acc = accuracy_score(y_train.cpu(), predicted.cpu())
 
         model.eval()
         with torch.no_grad():
             val_output = model(X_val)
-            val_pred = torch.argmax(val_output.sum(dim=0), dim=1)
+            val_pred = torch.argmax(val_output.sum(dim=0).view(X_val.shape[1], num_classes, population_per_class).sum(dim=2), dim=1)
             val_acc = accuracy_score(y_val.cpu(), val_pred.cpu())
-            val_loss = loss_fn(val_output, create_ideal_spikes(y_val, num_classes, num_steps, X_val.shape[1]))
+            val_loss = loss_fn(val_output, val_ideal_spikes)
         model.train()
 
-        print(f"Epoch {epoch+1}, Train Loss: {loss.item():.4f}, Train Acc: {acc*100:.2f}%, Test Loss: {val_loss.item():.4f}, Test Acc: {val_acc*100:.2f}%")
+        print(f"Epoch {epoch+1}, Train Loss: {loss.item():.4f}, Train Acc: {acc*100:.2f}%, Test Loss: {val_loss.item():.4f}, Test Acc: {val_acc*100:.2f}%)")
+
+
 
 def evaluate(model, X_eval, y_eval):
     model.eval()
+    num_classes = len(torch.unique(y_eval))
+    population_per_class = model.population_per_class
     with torch.no_grad():
         output = model(X_eval)
-        pred = torch.argmax(output.sum(dim=0), dim=1)
+        output_sum = output.sum(dim=0)
+        pred = torch.argmax(output_sum.view(X_eval.shape[1], num_classes, population_per_class).sum(dim=2), dim=1)
         acc = accuracy_score(y_eval.cpu(), pred.cpu())
         cm = confusion_matrix(y_eval.cpu(), pred.cpu())
     return acc, cm
@@ -215,7 +232,8 @@ if __name__ == "__main__":
     hidden_size = 128
     output_size = len(np.unique(y_train))
 
-    model = SNNClassifier(input_size, hidden_size, output_size)
+    population_per_class = 5
+    model = SNNClassifier(input_size, hidden_size, output_size=len(np.unique(y_train)), population_per_class=population_per_class)
 
     # Train the model
     train_with_ideal_spikes(
@@ -225,7 +243,7 @@ if __name__ == "__main__":
         spike_train_val,
         torch.tensor(y_val - 1),
         LR=1e-3,
-        epochs=1000
+        epochs=250
     )
 
     # Evaluate
