@@ -126,7 +126,8 @@ class SNNClassifier(nn.Module):
             spk2_rec.append(spk2)
         return torch.stack(spk2_rec)  # shape: (time, batch, total_outputs)
 
-# -------------------------- Training and Evaluation --------------------------
+
+# -------------------------- Target Spike Generator --------------------------
 def create_sparse_temporal_population_spikes(y, num_classes, population_per_class, num_steps, batch_size, spike_prob=0.7):
     total_outputs = num_classes * population_per_class
     ideal_spikes = torch.zeros((num_steps, batch_size, total_outputs))
@@ -140,6 +141,22 @@ def create_sparse_temporal_population_spikes(y, num_classes, population_per_clas
                     ideal_spikes[t, i, n] = 1.0
     return ideal_spikes
 
+
+# -------------------------- Van Rossum Loss --------------------------
+def van_rossum_convolution(spikes, tau, dt=1.0):
+    alpha = dt / tau
+    filtered = torch.zeros_like(spikes)
+    filtered[0] = spikes[0]
+    for t in range(1, spikes.shape[0]):
+        filtered[t] = (1 - alpha) * filtered[t - 1] + alpha * spikes[t]
+    return filtered
+
+def van_rossum_loss(output_spikes, target_spikes, tau=20.0, dt=1.0):
+    f_pred = van_rossum_convolution(output_spikes, tau, dt)
+    f_target = van_rossum_convolution(target_spikes, tau, dt)
+    return torch.mean((f_pred - f_target) ** 2)
+
+
 # -------------------------- Training and Evaluation --------------------------
 def train_with_ideal_spikes(model, X_train, y_train, X_val, y_val, LR=1e-3, epochs=10):
     X_train, X_val = X_train.float(), X_val.float()
@@ -147,7 +164,7 @@ def train_with_ideal_spikes(model, X_train, y_train, X_val, y_val, LR=1e-3, epoc
     model.train()
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=LR, weight_decay=1e-2)
-    loss_fn = nn.MSELoss()
+    loss_fn = lambda out, tgt: van_rossum_loss(out, tgt, tau=20.0)
 
     num_classes = len(torch.unique(y_train))
     population_per_class = model.population_per_class
@@ -179,7 +196,6 @@ def train_with_ideal_spikes(model, X_train, y_train, X_val, y_val, LR=1e-3, epoc
         print(f"Epoch {epoch+1}, Train Loss: {loss.item():.4f}, Train Acc: {acc*100:.2f}%, Test Loss: {val_loss.item():.4f}, Test Acc: {val_acc*100:.2f}%)")
 
 
-
 def evaluate(model, X_eval, y_eval):
     model.eval()
     num_classes = len(torch.unique(y_eval))
@@ -191,6 +207,7 @@ def evaluate(model, X_eval, y_eval):
         acc = accuracy_score(y_eval.cpu(), pred.cpu())
         cm = confusion_matrix(y_eval.cpu(), pred.cpu())
     return acc, cm
+
 
 
 # -------------------------- Main Script --------------------------
