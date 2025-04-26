@@ -260,13 +260,59 @@ if __name__ == "__main__":
         spike_train_val,
         torch.tensor(y_val - 1),
         LR=1e-3,
-        epochs=250
+        epochs=1000
     )
 
     # Evaluate
-    train_acc, _ = evaluate(model, spike_train_train, torch.tensor(y_train - 1))
+    train_acc, train_cm = evaluate(model, spike_train_train, torch.tensor(y_train - 1))
     test_acc, test_cm = evaluate(model, spike_train_val, torch.tensor(y_val - 1))
 
     print(f"Train Accuracy: {train_acc*100:.2f}%")
     print(f"Test Accuracy: {test_acc*100:.2f}%")
     print("Confusion Matrix (Test):\n", test_cm)
+"""   
+def plot_two_confusion_matrices(train_cm, test_cm, class_names):
+    fig, axes = plt.subplots(1, 2, figsize=(12, 5))  # 1 row, 2 columns
+
+    # Plot Train Confusion Matrix
+    axes[0].imshow(train_cm, interpolation='nearest', cmap='Blues')
+    axes[0].set_title('Confusion Matrix (Train)')
+    axes[0].set_xlabel('Predicted label')
+    axes[0].set_ylabel('True label')
+    tick_marks = np.arange(len(class_names))
+    axes[0].set_xticks(tick_marks)
+    axes[0].set_xticklabels(class_names, rotation=45)
+    axes[0].set_yticks(tick_marks)
+    axes[0].set_yticklabels(class_names)
+
+    thresh = train_cm.max() / 2.
+    for i in range(train_cm.shape[0]):
+        for j in range(train_cm.shape[1]):
+            axes[0].text(j, i, format(train_cm[i, j], 'd'),
+                         ha="center", va="center",
+                         color="white" if train_cm[i, j] > thresh else "black")
+
+    # Plot Test Confusion Matrix
+    axes[1].imshow(test_cm, interpolation='nearest', cmap='Blues')
+    axes[1].set_title('Confusion Matrix (Test)')
+    axes[1].set_xlabel('Predicted label')
+    axes[1].set_ylabel('True label')
+    axes[1].set_xticks(tick_marks)
+    axes[1].set_xticklabels(class_names, rotation=45)
+    axes[1].set_yticks(tick_marks)
+    axes[1].set_yticklabels(class_names)
+
+    thresh = test_cm.max() / 2.
+    for i in range(test_cm.shape[0]):
+        for j in range(test_cm.shape[1]):
+            axes[1].text(j, i, format(test_cm[i, j], 'd'),
+                         ha="center", va="center",
+                         color="white" if test_cm[i, j] > thresh else "black")
+
+    plt.tight_layout()
+    plt.show()
+
+# Then use:
+class_names = ['Left Hand', 'Right Hand', 'Feet', 'Tongue']
+plot_two_confusion_matrices(train_cm, test_cm, class_names)
+"""
