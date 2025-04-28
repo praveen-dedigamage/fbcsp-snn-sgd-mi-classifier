@@ -9,8 +9,7 @@ from itertools import combinations
 from scipy.signal import butter, filtfilt
 from scipy.linalg import eigh
 import logging
-from scipy.stats import f_oneway
-import matplotlib.pyplot as plt
+
 import random
 SEED = 42
 random.seed(SEED)
@@ -77,33 +76,30 @@ class PairwiseCSP:
         return projected
 
 # -------------------------- Spike Encoding --------------------------
-def encode_selected_signals_to_spikes(selected_projected_data, base_thresh=0.02, adapt_inc=0.04, decay=0.95, seed=None):
-    """
-    selected_projected_data: numpy array or torch tensor of shape (n_trials, n_components, n_times)
-    """
+def encode_projected_signals_to_spikes(projected_data_dict, base_thresh=0.02, adapt_inc=0.04, decay=0.95, seed=None):
     if seed is not None:
         torch.manual_seed(seed)
+    all_encoded = []
 
-    if isinstance(selected_projected_data, np.ndarray):
-        tensor_data = torch.tensor(selected_projected_data).float()
-    else:
-        tensor_data = selected_projected_data.float()
+    for pair in sorted(projected_data_dict):
+        data = projected_data_dict[pair]  # shape: (batch, channels, time)
+        tensor_data = torch.tensor(data).float()  # (batch, channels, time)
+        tensor_data = tensor_data.permute(2, 0, 1)  # -> (time, batch, channels)
 
-    # Reorder to (time, batch, channels)
-    tensor_data = tensor_data.permute(2, 0, 1)  # (time_steps, batch_size, n_components)
+        time_steps, batch_size, num_channels = tensor_data.shape
+        spikes = torch.zeros_like(tensor_data)
+        thresholds = torch.full((batch_size, num_channels), base_thresh)
 
-    time_steps, batch_size, num_channels = tensor_data.shape
-    spikes = torch.zeros_like(tensor_data)
-    thresholds = torch.full((batch_size, num_channels), base_thresh)
+        for t in range(1, time_steps):
+            delta = (tensor_data[t] - tensor_data[t - 1]).abs()
+            spike_t = (delta > thresholds).float()
+            spikes[t] = spike_t
+            thresholds = thresholds * decay + spike_t * adapt_inc
 
-    for t in range(1, time_steps):
-        delta = (tensor_data[t] - tensor_data[t - 1]).abs()
-        spike_t = (delta > thresholds).float()
-        spikes[t] = spike_t
-        thresholds = thresholds * decay + spike_t * adapt_inc
+        all_encoded.append(spikes)
 
-    return spikes  # shape: (time, batch, channels)
-
+    # Concatenate over channel dimension
+    return torch.cat(all_encoded, dim=2)  # shape: (time, batch, total_channels)
 
 
 
@@ -212,51 +208,6 @@ def evaluate(model, X_eval, y_eval):
         cm = confusion_matrix(y_eval.cpu(), pred.cpu())
     return acc, cm
 
-# 1. Compute F-statistics for all 132 CSP signals
-def compute_f_scores(projected_data_dict, y_labels):
-    all_signals = []
-    signal_names = []
-
-    for pair, projected_data in projected_data_dict.items():
-        # projected_data shape: (n_trials, n_components, n_times)
-        n_trials, n_components, n_times = projected_data.shape
-        for comp_idx in range(n_components):
-            # For each component, average over time to get 1 value per trial
-            feature = projected_data[:, comp_idx, :].mean(axis=1)  # shape: (n_trials,)
-            all_signals.append(feature)
-            signal_names.append(f"Pair{pair}_Comp{comp_idx}")
-
-    all_signals = np.stack(all_signals, axis=1)  # (n_trials, 132)
-    return all_signals, signal_names
-
-def compute_anova_f_scores(features, labels):
-    f_scores = []
-    n_features = features.shape[1]
-    for i in range(n_features):
-        # Split data by class
-        groups = []
-        for c in np.unique(labels):
-            groups.append(features[labels == c, i])
-        # Perform one-way ANOVA
-        f_val, _ = f_oneway(*groups)
-        f_scores.append(f_val)
-    return np.array(f_scores)
-
-def select_top_csp_components(projected_data_dict, selected_names):
-    selected_features = []
-
-    for name in selected_names:
-        # Parse name like "Pair(1, 4)_Comp8"
-        pair_str, comp_str = name.split('_')
-        pair = tuple(map(int, pair_str.strip('Pair()').split(',')))
-        comp_idx = int(comp_str.replace('Comp', ''))
-
-        # Extract the corresponding component
-        projected_data = projected_data_dict[pair]  # (n_trials, n_components, n_times)
-        selected_features.append(projected_data[:, comp_idx, :])  # (n_trials, n_times)
-
-    selected_features = np.stack(selected_features, axis=1)  # (n_trials, top_n, n_times)
-    return selected_features
 
 
 # -------------------------- Main Script --------------------------
@@ -287,57 +238,105 @@ if __name__ == "__main__":
     csp.fit(X_train_filtered, y_train)
     projected_train = csp.transform(X_train_filtered)
     projected_val = csp.transform(X_val_filtered)
-    
-    # 2. Run the process
-    X_features, signal_names = compute_f_scores(projected_train, y_train)
-    f_scores = compute_anova_f_scores(X_features, y_train)
-    
-    # 3. Rank CSP components by F-score
-    sorted_idx = np.argsort(f_scores)[::-1]  # descending order
-    sorted_scores = f_scores[sorted_idx]
-    sorted_names = [signal_names[i] for i in sorted_idx]
-    
-    top_n = 30
 
-    # Get the names of top-N CSP components
-    selected_component_names = sorted_names[:top_n]
+
+    spike_train_train = encode_projected_signals_to_spikes(projected_train)
+    spike_train_val = encode_projected_signals_to_spikes(projected_val)
+
+    import pandas as pd
+    from collections import defaultdict
     
-    # You can also find their indices
-    selected_indices = sorted_idx[:top_n]
+    # Step 1: Compute spike counts
+    spike_counts = spike_train_train.sum(dim=0).cpu().numpy()  # (n_trials, n_channels)
     
-    X_train_selected = select_top_csp_components(projected_train, selected_component_names)
-    X_val_selected = select_top_csp_components(projected_val, selected_component_names)
+    # Step 2: Build per-class ranking tables (top channels per class)
+    labels = y_train
+    n_classes = len(np.unique(labels))
+    n_channels = spike_counts.shape[1]
     
-    spike_train_train = encode_selected_signals_to_spikes(X_train_selected)
-    spike_train_val = encode_selected_signals_to_spikes(X_val_selected)
+    # Store per-class ranking
+    df_ranking = {}
     
-    # Model definition
-    input_size = spike_train_train.shape[2]
+    top_k = 66  # We will later select top 30
+    
+    for class_label in range(1, n_classes+1):
+        idx = np.where(labels == class_label)[0]
+        class_spike_counts = spike_counts[idx]  # (n_trials_of_class, n_channels)
+        mean_spike_per_channel = class_spike_counts.mean(axis=0)  # (n_channels,)
+        sorted_idx = np.argsort(mean_spike_per_channel)[::-1]  # descending
+        sorted_channel_names = [f"SpikeChan{ch}" for ch in sorted_idx]
+        df_ranking[f"Class{class_label}"] = sorted_channel_names
+    
+    # Step 3: For each class, calculate FairDPR
+    def calculate_fair_dpr_for_class(sorted_channel_names, top_k):
+        channel_fair_score = defaultdict(float)
+        for rank_idx, ch in enumerate(sorted_channel_names[:top_k]):
+            channel_fair_score[ch] += 1.0 / (rank_idx + 1)
+        return channel_fair_score
+    
+    # Step 4: For each class, compute FairDPR and select Top 30
+    top_channels_union = set()
+    
+    for class_name, sorted_channel_names in df_ranking.items():
+        fair_dpr = calculate_fair_dpr_for_class(sorted_channel_names, top_k)
+        # Convert to DataFrame
+        fair_dpr_df = pd.DataFrame({
+            "Channel": list(fair_dpr.keys()),
+            "FairDPR": list(fair_dpr.values())
+        })
+        # Sort by FairDPR (higher is better)
+        fair_dpr_df = fair_dpr_df.sort_values(by="FairDPR", ascending=False)
+        # Select top 30 channels for this class
+        top_channels = fair_dpr_df["Channel"].iloc[:top_k].tolist()
+        top_channels_union.update(top_channels)
+    
+    # Step 5: Final list of selected channels
+    final_selected_channels = sorted(top_channels_union)
+    
+    # --- Map channel names to indices ---
+    channel_name_to_idx = {f"SpikeChan{idx}": idx for idx in range(spike_train_train.shape[2])}
+    
+    # --- Find selected indices ---
+    selected_channel_indices = [channel_name_to_idx[ch] for ch in final_selected_channels]
+    selected_channel_indices = sorted(selected_channel_indices)
+    
+    # --- Filter spike tensors ---
+    spike_train_train_selected = spike_train_train[:, :, selected_channel_indices]
+    spike_train_val_selected = spike_train_val[:, :, selected_channel_indices]
+    
+    print(f"Total selected input channels for SNN: {spike_train_train_selected.shape[2]}")
+    
+    # --- Model definition ---
+    input_size = spike_train_train_selected.shape[2]
     hidden_size = 128
     output_size = len(np.unique(y_train))
-
     population_per_class = 5
-    model = SNNClassifier(input_size, hidden_size, output_size=len(np.unique(y_train)), population_per_class=population_per_class)
-
-    # Train the model
+    
+    model = SNNClassifier(
+        input_size=input_size,
+        hidden_size=hidden_size,
+        output_size=output_size,
+        population_per_class=population_per_class
+    )
+    
+    # --- Train the model ---
     train_with_ideal_spikes(
         model,
-        spike_train_train,
+        spike_train_train_selected,
         torch.tensor(y_train - 1),
-        spike_train_val,
+        spike_train_val_selected,
         torch.tensor(y_val - 1),
         LR=1e-3,
         epochs=1000
     )
-
-    # Evaluate
-    train_acc, train_cm = evaluate(model, spike_train_train, torch.tensor(y_train - 1))
-    test_acc, test_cm = evaluate(model, spike_train_val, torch.tensor(y_val - 1))
-
+    
+    # --- Evaluate ---
+    train_acc, train_cm = evaluate(model, spike_train_train_selected, torch.tensor(y_train - 1))
+    test_acc, test_cm = evaluate(model, spike_train_val_selected, torch.tensor(y_val - 1))
+    
     print(f"Train Accuracy: {train_acc*100:.2f}%")
     print(f"Test Accuracy: {test_acc*100:.2f}%")
-    print("Confusion Matrix (Test):\n", train_cm)
     print("Confusion Matrix (Test):\n", test_cm)
 
-    
-    print(X_train_selected.shape)  # Should be (n_trials, top_n, n_times)
+
+
