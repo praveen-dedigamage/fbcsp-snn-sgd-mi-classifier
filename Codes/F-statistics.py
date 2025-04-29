@@ -257,7 +257,7 @@ if __name__ == "__main__":
     # Store per-class ranking
     df_ranking = {}
     
-    top_k = 66  # We will later select top 30
+    top_k = 33  # We will later select top 30
     
     for class_label in range(1, n_classes+1):
         idx = np.where(labels == class_label)[0]

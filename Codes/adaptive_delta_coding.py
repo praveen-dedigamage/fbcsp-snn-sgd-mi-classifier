@@ -2,6 +2,7 @@ import h5py
 import numpy as np
 import torch
 import torch.nn as nn
+import pickle
 import snntorch as snn
 from snntorch import surrogate, spikegen
 from sklearn.metrics import accuracy_score, confusion_matrix
@@ -159,6 +160,9 @@ def van_rossum_loss(output_spikes, target_spikes, tau=20.0, dt=1.0):
 
 # -------------------------- Training and Evaluation --------------------------
 def train_with_ideal_spikes(model, X_train, y_train, X_val, y_val, LR=1e-3, epochs=10):
+    import torch
+    from sklearn.metrics import accuracy_score
+
     X_train, X_val = X_train.float(), X_val.float()
     y_train, y_val = y_train.long(), y_val.long()
     model.train()
@@ -171,8 +175,18 @@ def train_with_ideal_spikes(model, X_train, y_train, X_val, y_val, LR=1e-3, epoc
     num_steps = X_train.shape[0]
 
     # Precompute ideal spike targets (FIXED over all epochs)
-    train_ideal_spikes = create_sparse_temporal_population_spikes(y_train, num_classes, population_per_class, num_steps, X_train.shape[1])
-    val_ideal_spikes = create_sparse_temporal_population_spikes(y_val, num_classes, population_per_class, num_steps, X_val.shape[1])
+    train_ideal_spikes = create_sparse_temporal_population_spikes(
+        y_train, num_classes, population_per_class, num_steps, X_train.shape[1]
+    )
+    val_ideal_spikes = create_sparse_temporal_population_spikes(
+        y_val, num_classes, population_per_class, num_steps, X_val.shape[1]
+    )
+
+    # Lists to store losses and accuracies
+    train_losses = []
+    train_accuracies = []
+    val_losses = []
+    val_accuracies = []
 
     for epoch in range(epochs):
         optimizer.zero_grad()
@@ -193,8 +207,14 @@ def train_with_ideal_spikes(model, X_train, y_train, X_val, y_val, LR=1e-3, epoc
             val_loss = loss_fn(val_output, val_ideal_spikes)
         model.train()
 
-        print(f"Epoch {epoch+1}, Train Loss: {loss.item():.4f}, Train Acc: {acc*100:.2f}%, Test Loss: {val_loss.item():.4f}, Test Acc: {val_acc*100:.2f}%)")
+        train_losses.append(loss.item())
+        train_accuracies.append(acc)
+        val_losses.append(val_loss.item())
+        val_accuracies.append(val_acc)
 
+        print(f"Epoch {epoch+1}, Train Loss: {loss.item():.4f}, Train Acc: {acc*100:.2f}%, Test Loss: {val_loss.item():.4f}, Test Acc: {val_acc*100:.2f}%")
+
+    return train_losses, train_accuracies, val_losses, val_accuracies
 
 def evaluate(model, X_eval, y_eval):
     model.eval()
@@ -212,66 +232,101 @@ def evaluate(model, X_eval, y_eval):
 
 # -------------------------- Main Script --------------------------
 if __name__ == "__main__":
-    import os
-    base_directory = r'C:/Users/USER/Desktop/fbcsp-snn-mi-classifier/fbcsp-snn-mi-classifier'
-    relative_directory = r'Dataset'
-
-    # Load training data
-    with h5py.File(os.path.join(base_directory, relative_directory, 'EEG_python_ready_without_ICA_A01T.mat'), 'r') as file:
-        X_train = file['X'][:]
-        X_train = np.transpose(X_train, (2, 0, 1))
-        y_train = file['y'][:].flatten()
-
-    # Load validation data
-    with h5py.File(os.path.join(base_directory, relative_directory, 'EEG_python_ready_without_ICA_A01E.mat'), 'r') as file:
-        X_val = file['X'][:]
-        X_val = np.transpose(X_val, (2, 0, 1))
-        y_val = file['y'][:].flatten()
-
-    # Bandpass filtering
-    freq_band = (4, 30)
-    X_train_filtered = bandpass_filter(X_train, *freq_band)
-    X_val_filtered = bandpass_filter(X_val, *freq_band)
-
-    # Pairwise CSP
-    csp = PairwiseCSP(n_components=22, selected_classes=[1, 2, 3, 4])
-    csp.fit(X_train_filtered, y_train)
-    projected_train = csp.transform(X_train_filtered)
-    projected_val = csp.transform(X_val_filtered)
-
-
-    spike_train_train = encode_projected_signals_to_spikes(projected_train)
-    spike_train_val = encode_projected_signals_to_spikes(projected_val)
+    for i in range(5):
+        import os
+        base_directory = r'C:/Users/USER/Desktop/fbcsp-snn-mi-classifier/fbcsp-snn-mi-classifier'
+        relative_directory = r'Dataset'
     
-    """
+        # Load training data
+        with h5py.File(os.path.join(base_directory, relative_directory, 'EEG_python_ready_without_ICA_A01T.mat'), 'r') as file:
+            X_train = file['X'][:]
+            X_train = np.transpose(X_train, (2, 0, 1))
+            y_train = file['y'][:].flatten()
+    
+        # Load validation data
+        with h5py.File(os.path.join(base_directory, relative_directory, 'EEG_python_ready_without_ICA_A01E.mat'), 'r') as file:
+            X_val = file['X'][:]
+            X_val = np.transpose(X_val, (2, 0, 1))
+            y_val = file['y'][:].flatten()
+    
+        # Bandpass filtering
+        freq_band = (4, 30)
+        X_train_filtered = bandpass_filter(X_train, *freq_band)
+        X_val_filtered = bandpass_filter(X_val, *freq_band)
+    
+        # Pairwise CSP
+        csp = PairwiseCSP(n_components=22, selected_classes=[1, 2, 3, 4])
+        lambda_R = 0.05 + 0.05*i
+        csp.fit(X_train_filtered, y_train, reg_lambda=lambda_R)
+        projected_train = csp.transform(X_train_filtered)
+        projected_val = csp.transform(X_val_filtered)
+    
+    
+        spike_train_train = encode_projected_signals_to_spikes(projected_train)
+        spike_train_val = encode_projected_signals_to_spikes(projected_val)
+    
+        # Model definition
+        input_size = spike_train_train.shape[2]
+        hidden_size = 128
+        output_size = len(np.unique(y_train))
+    
+        population_per_class = 10
+        model = SNNClassifier(input_size, hidden_size, output_size=len(np.unique(y_train)), population_per_class=population_per_class)
+    
+        # Train the model
+        train_losses, train_accuracies, val_losses, val_accuracies = train_with_ideal_spikes(
+            model,
+            spike_train_train,
+            torch.tensor(y_train - 1),
+            spike_train_val,
+            torch.tensor(y_val - 1),
+            LR=1e-3,
+            epochs=1
+        )
+    
+        # Evaluate
+        train_acc, train_cm = evaluate(model, spike_train_train, torch.tensor(y_train - 1))
+        test_acc, test_cm = evaluate(model, spike_train_val, torch.tensor(y_val - 1))
+    
+        print(f"Train Accuracy: {train_acc*100:.2f}%")
+        print(f"Test Accuracy: {test_acc*100:.2f}%")
+        print("Confusion Matrix (Test):\n", test_cm)
+    
+        # Save model and training history
+        save_path = f'model_and_history{i}.pth'
+        torch.save({
+            'model_state_dict': model.state_dict(),
+            'train_losses': train_losses,
+            'train_accuracies': train_accuracies,
+            'val_losses': val_losses,
+            'val_accuracies': val_accuracies,
+            'train_cm':train_cm,
+            'test_cm':test_cm,
+            'trian_acc':train_acc,
+            'test_acc':test_acc,
+        }, save_path)
+        
+        """
+        
+        # Load model and training history
+        checkpoint = torch.load('model_and_history.pth', weights_only=False)
+    
+        
+        # Load model parameters
+        model.load_state_dict(checkpoint['model_state_dict'])
+        
+        # Load training history
+        ltrain_losses = checkpoint['train_losses']
+        ltrain_accuracies = checkpoint['train_accuracies']
+        lval_losses = checkpoint['val_losses']
+        lval_accuracies = checkpoint['val_accuracies']
+        ltrain_cm = checkpoint['train_cm']
+        ltest_cm = checkpoint['test_cm']
+        ltrian_acc = checkpoint['trian_acc']
+        ltest_acc = checkpoint['test_acc']
+        """
 
-    # Model definition
-    input_size = spike_train_train.shape[2]
-    hidden_size = 128
-    output_size = len(np.unique(y_train))
 
-    population_per_class = 5
-    model = SNNClassifier(input_size, hidden_size, output_size=len(np.unique(y_train)), population_per_class=population_per_class)
-
-    # Train the model
-    train_with_ideal_spikes(
-        model,
-        spike_train_train,
-        torch.tensor(y_train - 1),
-        spike_train_val,
-        torch.tensor(y_val - 1),
-        LR=1e-3,
-        epochs=1000
-    )
-
-    # Evaluate
-    train_acc, train_cm = evaluate(model, spike_train_train, torch.tensor(y_train - 1))
-    test_acc, test_cm = evaluate(model, spike_train_val, torch.tensor(y_val - 1))
-
-    print(f"Train Accuracy: {train_acc*100:.2f}%")
-    print(f"Test Accuracy: {test_acc*100:.2f}%")
-    print("Confusion Matrix (Test):\n", test_cm)
-    """
 """   
 def plot_two_confusion_matrices(train_cm, test_cm, class_names):
     fig, axes = plt.subplots(1, 2, figsize=(12, 5))  # 1 row, 2 columns
