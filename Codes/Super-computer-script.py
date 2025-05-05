@@ -4,22 +4,23 @@ import torch
 import torch.nn as nn
 import pickle
 import snntorch as snn
+import logging
+import random
+import os
+import csv
+import sys
+import time
+import ast
+
 from snntorch import surrogate, spikegen
 from sklearn.metrics import accuracy_score, confusion_matrix
 from itertools import combinations
 from scipy.signal import butter, filtfilt
 from scipy.linalg import eigh
-import logging
 
-import random
-SEED = 42
-random.seed(SEED)
-np.random.seed(SEED)
-torch.manual_seed(SEED)
-torch.cuda.manual_seed_all(SEED)
-torch.backends.cudnn.deterministic = True
-torch.backends.cudnn.benchmark = False
-
+# -------------------------- Device --------------------------
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+print(f"✅ Using device: {device}")
 
 # -------------------------- Bandpass Filter --------------------------
 def bandpass_filter(data, lowcut, highcut, fs=250.0, order=5):
@@ -83,10 +84,9 @@ def encode_projected_signals_to_spikes(projected_data_dict, base_thresh=0.02, ad
     all_encoded = []
 
     for pair in sorted(projected_data_dict):
-        data = projected_data_dict[pair]  # shape: (batch, channels, time)
-        tensor_data = torch.tensor(data).float()  # (batch, channels, time)
-        tensor_data = tensor_data.permute(2, 0, 1)  # -> (time, batch, channels)
-
+        data = projected_data_dict[pair]
+        tensor_data = torch.tensor(data).float()
+        tensor_data = tensor_data.permute(2, 0, 1)
         time_steps, batch_size, num_channels = tensor_data.shape
         spikes = torch.zeros_like(tensor_data)
         thresholds = torch.full((batch_size, num_channels), base_thresh)
@@ -99,10 +99,7 @@ def encode_projected_signals_to_spikes(projected_data_dict, base_thresh=0.02, ad
 
         all_encoded.append(spikes)
 
-    # Concatenate over channel dimension
-    return torch.cat(all_encoded, dim=2)  # shape: (time, batch, total_channels)
-
-
+    return torch.cat(all_encoded, dim=2)
 
 # -------------------------- SNN Model --------------------------
 class SNNClassifier(nn.Module):
@@ -110,7 +107,6 @@ class SNNClassifier(nn.Module):
         super().__init__()
         self.population_per_class = population_per_class
         self.total_outputs = output_size * population_per_class
-
         beta = 0.95
         self.fc1 = nn.Linear(input_size, hidden_size)
         self.lif1 = snn.Leaky(beta=beta, spike_grad=surrogate.fast_sigmoid())
@@ -125,15 +121,14 @@ class SNNClassifier(nn.Module):
             spk1, mem1 = self.lif1(self.fc1(x[step]), mem1)
             spk2, mem2 = self.lif2(self.fc2(spk1), mem2)
             spk2_rec.append(spk2)
-        return torch.stack(spk2_rec)  # shape: (time, batch, total_outputs)
-
+        return torch.stack(spk2_rec)
 
 # -------------------------- Target Spike Generator --------------------------
 def create_sparse_temporal_population_spikes(y, num_classes, population_per_class, num_steps, batch_size, spike_prob=0.7):
     total_outputs = num_classes * population_per_class
-    ideal_spikes = torch.zeros((num_steps, batch_size, total_outputs))
+    ideal_spikes = torch.zeros((num_steps, batch_size, total_outputs), device=device)
     for i in range(batch_size):
-        class_idx = y[i]
+        class_idx = int(y[i].item())
         start = class_idx * population_per_class
         end = start + population_per_class
         for t in range(num_steps):
@@ -141,7 +136,6 @@ def create_sparse_temporal_population_spikes(y, num_classes, population_per_clas
                 if torch.rand(1).item() < spike_prob:
                     ideal_spikes[t, i, n] = 1.0
     return ideal_spikes
-
 
 # -------------------------- Van Rossum Loss --------------------------
 def van_rossum_convolution(spikes, tau, dt=1.0):
@@ -157,14 +151,15 @@ def van_rossum_loss(output_spikes, target_spikes, tau=20.0, dt=1.0):
     f_target = van_rossum_convolution(target_spikes, tau, dt)
     return torch.mean((f_pred - f_target) ** 2)
 
-
 # -------------------------- Training and Evaluation --------------------------
 def train_with_ideal_spikes(model, X_train, y_train, X_val, y_val, LR=1e-3, epochs=10):
-    import torch
+    import time
     from sklearn.metrics import accuracy_score
 
-    X_train, X_val = X_train.float(), X_val.float()
-    y_train, y_val = y_train.long(), y_val.long()
+    start = time.time()
+    X_train, X_val = X_train.to(device), X_val.to(device)
+    y_train, y_val = y_train.to(device), y_val.to(device)
+    model.to(device)
     model.train()
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=LR, weight_decay=1e-2)
@@ -174,50 +169,72 @@ def train_with_ideal_spikes(model, X_train, y_train, X_val, y_val, LR=1e-3, epoc
     population_per_class = model.population_per_class
     num_steps = X_train.shape[0]
 
-    # Precompute ideal spike targets (FIXED over all epochs)
     train_ideal_spikes = create_sparse_temporal_population_spikes(
-        y_train, num_classes, population_per_class, num_steps, X_train.shape[1]
-    )
+        y_train, num_classes, population_per_class, num_steps, X_train.shape[1])
     val_ideal_spikes = create_sparse_temporal_population_spikes(
-        y_val, num_classes, population_per_class, num_steps, X_val.shape[1]
-    )
+        y_val, num_classes, population_per_class, num_steps, X_val.shape[1])
 
-    # Lists to store losses and accuracies
-    train_losses = []
-    train_accuracies = []
-    val_losses = []
-    val_accuracies = []
+    best_test_acc = 0.0
+    best_model_state = None
+
+    # ⬇️ Initialize history lists
+    train_losses, val_losses = [], []
+    train_accuracies, val_accuracies = [], []
+
+    print("Checkpoint 3.1", time.time() - start)
 
     for epoch in range(epochs):
+        start = time.time()
+
         optimizer.zero_grad()
         output_spikes = model(X_train)
         loss = loss_fn(output_spikes, train_ideal_spikes)
         loss.backward()
         optimizer.step()
 
+        # Train accuracy
         output_sum = output_spikes.sum(dim=0)
-        predicted = torch.argmax(output_sum.view(X_train.shape[1], num_classes, population_per_class).sum(dim=2), dim=1)
+        predicted = torch.argmax(
+            output_sum.view(X_train.shape[1], num_classes, population_per_class).sum(dim=2), dim=1)
         acc = accuracy_score(y_train.cpu(), predicted.cpu())
 
+        # Validation
         model.eval()
         with torch.no_grad():
             val_output = model(X_val)
-            val_pred = torch.argmax(val_output.sum(dim=0).view(X_val.shape[1], num_classes, population_per_class).sum(dim=2), dim=1)
+            val_pred = torch.argmax(
+                val_output.sum(dim=0).view(X_val.shape[1], num_classes, population_per_class).sum(dim=2), dim=1)
             val_acc = accuracy_score(y_val.cpu(), val_pred.cpu())
             val_loss = loss_fn(val_output, val_ideal_spikes)
         model.train()
 
+        # ⬇️ Append to history
         train_losses.append(loss.item())
-        train_accuracies.append(acc)
         val_losses.append(val_loss.item())
+        train_accuracies.append(acc)
         val_accuracies.append(val_acc)
 
-        print(f"Epoch {epoch+1}, Train Loss: {loss.item():.4f}, Train Acc: {acc*100:.2f}%, Test Loss: {val_loss.item():.4f}, Test Acc: {val_acc*100:.2f}%")
+        print(f"Epoch {epoch+1}, Train Loss: {loss.item():.4f}, Train Acc: {acc*100:.2f}%, "
+              f"Test Loss: {val_loss.item():.4f}, Test Acc: {val_acc*100:.2f}%")
+        print(f"Checkpoint 3.1.{epoch}", time.time() - start)
+        
+        sys.stdout.flush()
 
-    return train_losses, train_accuracies, val_losses, val_accuracies
+        # Save best model
+        if val_acc > best_test_acc:
+            best_test_acc = val_acc
+            best_model_state = model.state_dict()
+
+    if best_model_state is not None:
+        model.load_state_dict(best_model_state)
+
+    return model, train_losses, train_accuracies, val_losses, val_accuracies
+
 
 def evaluate(model, X_eval, y_eval):
     model.eval()
+    X_eval = X_eval.to(device)
+    y_eval = y_eval.to(device)
     num_classes = len(torch.unique(y_eval))
     population_per_class = model.population_per_class
     with torch.no_grad():
@@ -228,149 +245,103 @@ def evaluate(model, X_eval, y_eval):
         cm = confusion_matrix(y_eval.cpu(), pred.cpu())
     return acc, cm
 
-
-
 # -------------------------- Main Script --------------------------
 if __name__ == "__main__":
-    
-    import os
+    start = time.time()
+    #base_directory = r'/scratch/project_2003397/praveen'
+    #relative_directory = r'Dataset'
     base_directory = r'C:/Users/USER/Desktop/fbcsp-snn-mi-classifier/fbcsp-snn-mi-classifier'
     relative_directory = r'Dataset'
 
-    # Load training data
     with h5py.File(os.path.join(base_directory, relative_directory, 'EEG_python_ready_without_ICA_A01T.mat'), 'r') as file:
         X_train = file['X'][:]
         X_train = np.transpose(X_train, (2, 0, 1))
         y_train = file['y'][:].flatten()
 
-    # Load validation data
     with h5py.File(os.path.join(base_directory, relative_directory, 'EEG_python_ready_without_ICA_A01E.mat'), 'r') as file:
         X_val = file['X'][:]
         X_val = np.transpose(X_val, (2, 0, 1))
         y_val = file['y'][:].flatten()
-
-    # Bandpass filtering
-    freq_band = (4, 30)
-    X_train_filtered = bandpass_filter(X_train, *freq_band)
-    X_val_filtered = bandpass_filter(X_val, *freq_band)
-        
-    for i in range(5):
-        # Pairwise CSP
-        csp = PairwiseCSP(n_components=22, selected_classes=[1, 2, 3, 4])
-        lambda_R = 0.01 + 0.01*i
-        csp.fit(X_train_filtered, y_train, reg_lambda=lambda_R)
-        projected_train = csp.transform(X_train_filtered)
-        projected_val = csp.transform(X_val_filtered)
     
+    print("Checkpoint 1", time.time() - start)
     
-        spike_train_train = encode_projected_signals_to_spikes(projected_train)
-        spike_train_val = encode_projected_signals_to_spikes(projected_val)
+    start = time.time()
     
-        # Model definition
-        input_size = spike_train_train.shape[2]
-        hidden_size = 128
-        output_size = len(np.unique(y_train))
+    lambda_R = float(sys.argv[1]) if len(sys.argv) > 1 else 0.01
+    freq_bands = ast.literal_eval(sys.argv[2]) if len(sys.argv) > 2 else [(8, 12), (12, 20), (20, 30)]
+
+    X_train_filtered_bands = [bandpass_filter(X_train, low, high) for (low, high) in freq_bands]
+    X_val_filtered_bands = [bandpass_filter(X_val, low, high) for (low, high) in freq_bands]
     
-        population_per_class = 10
-        model = SNNClassifier(input_size, hidden_size, output_size=len(np.unique(y_train)), population_per_class=population_per_class)
+    X_train_filtered = np.concatenate(X_train_filtered_bands, axis=1)  # shape: (samples, n_channels * n_bands, time)
+    X_val_filtered = np.concatenate(X_val_filtered_bands, axis=1)
+
+    csp = PairwiseCSP(n_components=X_train_filtered.shape[1], selected_classes=[1, 2, 3, 4])
+    csp.fit(X_train_filtered, y_train, reg_lambda=lambda_R)
+    projected_train = csp.transform(X_train_filtered)
+    projected_val = csp.transform(X_val_filtered)
     
-        # Train the model
-        train_losses, train_accuracies, val_losses, val_accuracies = train_with_ideal_spikes(
-            model,
-            spike_train_train,
-            torch.tensor(y_train - 1),
-            spike_train_val,
-            torch.tensor(y_val - 1),
-            LR=1e-3,
-            epochs=1000
-        )
+    print("Checkpoint 2", time.time() - start)
+    start = time.time()
     
-        # Evaluate
-        train_acc, train_cm = evaluate(model, spike_train_train, torch.tensor(y_train - 1))
-        test_acc, test_cm = evaluate(model, spike_train_val, torch.tensor(y_val - 1))
+    spike_train_train = encode_projected_signals_to_spikes(projected_train).to(device)
+    spike_train_val = encode_projected_signals_to_spikes(projected_val).to(device)
+
+    input_size = spike_train_train.shape[2]
+    hidden_size = 128
+    output_size = len(np.unique(y_train))
+    population_per_class = 10
+
+    model = SNNClassifier(input_size, hidden_size, output_size, population_per_class).to(device)
     
-        print(f"Train Accuracy: {train_acc*100:.2f}%")
-        print(f"Test Accuracy: {test_acc*100:.2f}%")
-        print("Confusion Matrix (Test):\n", test_cm)
+    print("Checkpoint 3", time.time() - start)
+    start = time.time()
     
-        # Save model and training history
-        save_path = f'model_and_history{i}.pth'
-        torch.save({
-            'model_state_dict': model.state_dict(),
-            'train_losses': train_losses,
-            'train_accuracies': train_accuracies,
-            'val_losses': val_losses,
-            'val_accuracies': val_accuracies,
-            'train_cm':train_cm,
-            'test_cm':test_cm,
-            'trian_acc':train_acc,
-            'test_acc':test_acc,
-        }, save_path)
-        
-        """
-        
-        # Load model and training history
-        checkpoint = torch.load('model_and_history0.pth', weights_only=False)
-    
-        
-        # Load model parameters
-        model.load_state_dict(checkpoint['model_state_dict'])
-        
-        # Load training history
-        ltrain_losses = checkpoint['train_losses']
-        ltrain_accuracies = checkpoint['train_accuracies']
-        lval_losses = checkpoint['val_losses']
-        lval_accuracies = checkpoint['val_accuracies']
-        ltrain_cm = checkpoint['train_cm']
-        ltest_cm = checkpoint['test_cm']
-        ltrian_acc = checkpoint['trian_acc']
-        ltest_acc = checkpoint['test_acc']
-        """
+    best_model, train_losses, train_accuracies, val_losses, val_accuracies = train_with_ideal_spikes(
+        model,
+        spike_train_train,
+        torch.tensor(y_train - 1).to(device),
+        spike_train_val,
+        torch.tensor(y_val - 1).to(device),
+        LR=1e-3,
+        epochs=1000
+    )
+    print("Checkpoint 4", time.time() - start)
+    start = time.time()
 
+    train_acc, train_cm = evaluate(model, spike_train_train, torch.tensor(y_train - 1))
+    test_acc, test_cm = evaluate(model, spike_train_val, torch.tensor(y_val - 1))
 
-"""   
-def plot_two_confusion_matrices(train_cm, test_cm, class_names):
-    fig, axes = plt.subplots(1, 2, figsize=(12, 5))  # 1 row, 2 columns
+    results_dir = os.path.join(base_directory, "results")
+    os.makedirs(results_dir, exist_ok=True)
+    summary_file = os.path.join(results_dir, f"summary_lambda_{lambda_R:.2f}.csv")
 
-    # Plot Train Confusion Matrix
-    axes[0].imshow(train_cm, interpolation='nearest', cmap='Blues')
-    axes[0].set_title('Confusion Matrix (Train)')
-    axes[0].set_xlabel('Predicted label')
-    axes[0].set_ylabel('True label')
-    tick_marks = np.arange(len(class_names))
-    axes[0].set_xticks(tick_marks)
-    axes[0].set_xticklabels(class_names, rotation=45)
-    axes[0].set_yticks(tick_marks)
-    axes[0].set_yticklabels(class_names)
+    with open(summary_file, mode="w", newline="") as file:
+        writer = csv.writer(file)
+        writer.writerow(["Metric", "Value"])
+        writer.writerow(["Train Accuracy", train_acc])
+        writer.writerow(["Test Accuracy", test_acc])
+        writer.writerow([])
+        writer.writerow(["Confusion Matrix - Train"])
+        writer.writerows(train_cm)
+        writer.writerow([])
+        writer.writerow(["Confusion Matrix - Test"])
+        writer.writerows(test_cm)
 
-    thresh = train_cm.max() / 2.
-    for i in range(train_cm.shape[0]):
-        for j in range(train_cm.shape[1]):
-            axes[0].text(j, i, format(train_cm[i, j], 'd'),
-                         ha="center", va="center",
-                         color="white" if train_cm[i, j] > thresh else "black")
+    print(f"\n✅ Final results saved to: {summary_file}")
 
-    # Plot Test Confusion Matrix
-    axes[1].imshow(test_cm, interpolation='nearest', cmap='Blues')
-    axes[1].set_title('Confusion Matrix (Test)')
-    axes[1].set_xlabel('Predicted label')
-    axes[1].set_ylabel('True label')
-    axes[1].set_xticks(tick_marks)
-    axes[1].set_xticklabels(class_names, rotation=45)
-    axes[1].set_yticks(tick_marks)
-    axes[1].set_yticklabels(class_names)
+    save_path = f'model_and_history{lambda_R:.2f}.pth'
+    torch.save({
+        'model_state_dict': model.state_dict(),
+        'train_losses': train_losses,
+        'train_accuracies': train_accuracies,
+        'val_losses': val_losses,
+        'val_accuracies': val_accuracies,
+        'train_cm': train_cm,
+        'test_cm': test_cm,
+        'train_acc': train_acc,
+        'test_acc': test_acc,
+    }, save_path)
 
-    thresh = test_cm.max() / 2.
-    for i in range(test_cm.shape[0]):
-        for j in range(test_cm.shape[1]):
-            axes[1].text(j, i, format(test_cm[i, j], 'd'),
-                         ha="center", va="center",
-                         color="white" if test_cm[i, j] > thresh else "black")
-
-    plt.tight_layout()
-    plt.show()
-
-# Then use:
-class_names = ['Left Hand', 'Right Hand', 'Feet', 'Tongue']
-plot_two_confusion_matrices(train_cm, test_cm, class_names)
-"""
+    print(f"\n✅ Final results saved to: {save_path}")
+    print("Checkpoint 5", time.time() - start)
