@@ -72,7 +72,7 @@ class PairwiseCSP:
         projected = {}
         for (cl1, cl2), W in self.pairwise_filters.items():
             X_proj = np.array([W.T @ trial for trial in X])
-            X_proj = np.array([trial / np.std(trial) if np.std(trial) > 0 else trial for trial in X_proj])
+            #X_proj = np.array([trial / np.std(trial) if np.std(trial) > 0 else trial for trial in X_proj])
             projected[(cl1, cl2)] = X_proj
         return projected
 
@@ -254,7 +254,7 @@ if __name__ == "__main__":
     X_train_filtered = bandpass_filter(X_train, *freq_band)
     X_val_filtered = bandpass_filter(X_val, *freq_band)
         
-    for i in range(5):
+    for i in range(1):
         # Pairwise CSP
         csp = PairwiseCSP(n_components=22, selected_classes=[1, 2, 3, 4])
         lambda_R = 0.01 + 0.01*i

@@ -73,7 +73,7 @@ class PairwiseCSP:
         projected = {}
         for (cl1, cl2), W in self.pairwise_filters.items():
             X_proj = np.array([W.T @ trial for trial in X])
-            X_proj = np.array([trial / np.std(trial) if np.std(trial) > 0 else trial for trial in X_proj])
+            #X_proj = np.array([trial / np.std(trial) if np.std(trial) > 0 else trial for trial in X_proj])
             projected[(cl1, cl2)] = X_proj
         return projected
 
@@ -152,7 +152,7 @@ def van_rossum_loss(output_spikes, target_spikes, tau=20.0, dt=1.0):
     return torch.mean((f_pred - f_target) ** 2)
 
 # -------------------------- Training and Evaluation --------------------------
-def train_with_ideal_spikes(model, X_train, y_train, X_val, y_val, LR=1e-3, epochs=10):
+def train_with_ideal_spikes(model, X_train, y_train, X_val, y_val, LR=1e-3, epochs=10, target_sprop = 0.7):
     import time
     from sklearn.metrics import accuracy_score
 
@@ -170,9 +170,9 @@ def train_with_ideal_spikes(model, X_train, y_train, X_val, y_val, LR=1e-3, epoc
     num_steps = X_train.shape[0]
 
     train_ideal_spikes = create_sparse_temporal_population_spikes(
-        y_train, num_classes, population_per_class, num_steps, X_train.shape[1])
+        y_train, num_classes, population_per_class, num_steps, X_train.shape[1], target_sprop)
     val_ideal_spikes = create_sparse_temporal_population_spikes(
-        y_val, num_classes, population_per_class, num_steps, X_val.shape[1])
+        y_val, num_classes, population_per_class, num_steps, X_val.shape[1], target_sprop)
 
     best_test_acc = 0.0
     best_model_state = None
@@ -304,7 +304,8 @@ if __name__ == "__main__":
         spike_train_val,
         torch.tensor(y_val - 1).to(device),
         LR=1e-3,
-        epochs=1000
+        epochs=1000,
+        target_sprop = 0.4
     )
     print("Checkpoint 4", time.time() - start)
     start = time.time()
