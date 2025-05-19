@@ -182,6 +182,7 @@ def train_with_ideal_spikes(model, X_train, y_train, X_val, y_val, LR=1e-3, epoc
     # ⬇️ Initialize history lists
     train_losses, val_losses = [], []
     train_accuracies, val_accuracies = [], []
+    train_incorrect_spike_ratios, val_incorrect_spike_ratios = [], []
 
     #print("Checkpoint 3.1", time.time() - start)
 
@@ -199,6 +200,27 @@ def train_with_ideal_spikes(model, X_train, y_train, X_val, y_val, LR=1e-3, epoc
         predicted = torch.argmax(
             output_sum.view(X_train.shape[1], num_classes, population_per_class).sum(dim=2), dim=1)
         acc = accuracy_score(y_train.cpu(), predicted.cpu())
+        
+        incorrect_spikes = 0.0
+        total_output_spikes = 0.0
+        
+        for i in range(X_train.shape[1]):  # for each sample in batch
+            class_idx = int(y_train[i].item())
+            start = class_idx * population_per_class
+            end = start + population_per_class
+        
+            output_sample = output_spikes[:, i, :]  # shape [time, outputs]
+            total_output_spikes += output_sample.sum().item()
+        
+            # Zero out target class neurons, keep non-target ones
+            non_target_spikes = output_sample.clone()
+            non_target_spikes[:, start:end] = 0
+            incorrect_spikes += non_target_spikes.sum().item()
+        
+        # Normalize
+        train_incorrect_spike_ratio = incorrect_spikes / (total_output_spikes + 1e-6)
+        train_avg_spikes_per_trial = total_output_spikes / X_train.shape[1]
+
 
         # Validation
         model.eval()
@@ -208,6 +230,28 @@ def train_with_ideal_spikes(model, X_train, y_train, X_val, y_val, LR=1e-3, epoc
                 val_output.sum(dim=0).view(X_val.shape[1], num_classes, population_per_class).sum(dim=2), dim=1)
             val_acc = accuracy_score(y_val.cpu(), val_pred.cpu())
             val_loss = loss_fn(val_output, val_ideal_spikes)
+            
+            # Incorrect spike ratio for validation
+            val_incorrect_spikes = 0.0
+            val_total_output_spikes = 0.0
+            
+            for i in range(X_val.shape[1]):  # each sample in batch
+                class_idx = int(y_val[i].item())
+                start = class_idx * population_per_class
+                end = start + population_per_class
+            
+                val_output_sample = val_output[:, i, :]  # shape [time, outputs]
+                val_total_output_spikes += val_output_sample.sum().item()
+            
+                # Zero out target class neurons, keep non-target ones
+                non_target_spikes = val_output_sample.clone()
+                non_target_spikes[:, start:end] = 0
+                val_incorrect_spikes += non_target_spikes.sum().item()
+            
+            val_incorrect_spike_ratio = val_incorrect_spikes / (val_total_output_spikes + 1e-6)
+            val_avg_spike_count_per_trial = val_total_output_spikes / X_val.shape[1]
+
+            
         model.train()
 
         # ⬇️ Append to history
@@ -215,6 +259,8 @@ def train_with_ideal_spikes(model, X_train, y_train, X_val, y_val, LR=1e-3, epoc
         val_losses.append(val_loss.item())
         train_accuracies.append(acc)
         val_accuracies.append(val_acc)
+        train_incorrect_spike_ratios.append(train_incorrect_spike_ratio)
+        val_incorrect_spike_ratios.append(val_incorrect_spike_ratio)
 
         #print(f"Epoch {epoch+1}, Train Loss: {loss.item():.4f}, Train Acc: {acc*100:.2f}%, "
         #      f"Test Loss: {val_loss.item():.4f}, Test Acc: {val_acc*100:.2f}%")
@@ -231,7 +277,7 @@ def train_with_ideal_spikes(model, X_train, y_train, X_val, y_val, LR=1e-3, epoc
         model.load_state_dict(best_model_state)
         
     #print(f"Checkpoint 3.1.{epoch}", time.time() - start)
-    return model, train_losses, train_accuracies, val_losses, val_accuracies
+    return model, train_losses, train_accuracies, train_incorrect_spike_ratios, val_losses, val_accuracies, val_incorrect_spike_ratios
 
 
 def evaluate(model, X_eval, y_eval):
@@ -330,7 +376,7 @@ if __name__ == "__main__":
         #print("Checkpoint 3", time.time() - start)
         #start = time.time()
         
-        best_model, train_losses, train_accuracies, val_losses, val_accuracies = train_with_ideal_spikes(
+        best_model, train_losses, train_accuracies, train_incorrect_spike_ratios, val_losses, val_accuracies, val_incorrect_spike_ratios = train_with_ideal_spikes(
             model,
             spike_train_train,
             torch.tensor(y_train - 1).to(device),
@@ -356,8 +402,10 @@ if __name__ == "__main__":
             'model_state_dict': model.state_dict(),
             'train_losses': train_losses,
             'train_accuracies': train_accuracies,
+            'train_incorrect_spike_ratios': train_incorrect_spike_ratios,
             'val_losses': val_losses,
             'val_accuracies': val_accuracies,
+            'val_incorrect_spike_ratios': val_incorrect_spike_ratios,
             'train_cm': train_cm,
             'test_cm': test_cm,
             'train_acc': train_acc,
