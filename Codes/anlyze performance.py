@@ -11,7 +11,7 @@ import torch.serialization
 torch.serialization.add_safe_globals({_reconstruct})
 
 # ----------- Settings -----------
-folder_path = "model_hist5"
+folder_path = "results"
 class_names = ["Left Hand", "Right Hand", "Feet", "Tongue"]
 
 # ----------- Find .pth Files -----------
@@ -47,7 +47,10 @@ selected_models_with_acc = []
 for pth_file_path in pth_files:
     print(f"\n📂 Loading file: {pth_file_path}")
 
-    checkpoint = torch.load(pth_file_path, weights_only=False)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"🖥️  Loading model to: {device}")
+    checkpoint = torch.load(pth_file_path, map_location=device, weights_only=False)
+
 
     train_losses = checkpoint["train_losses"]
     val_losses = checkpoint["val_losses"]
@@ -115,7 +118,9 @@ for rank, idx in enumerate(ranked_indices, start=1):
     print(f"\n📈 Rank {rank} | Index {idx} | Accuracy: {test_acc * 100:.2f}%")
     print(f"📂 Path: {path}")
 
-    checkpoint = torch.load(path, weights_only=False)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"🖥️  Loading model to: {device}")
+    checkpoint = torch.load(path, map_location=device, weights_only=False)
 
     train_losses = checkpoint["train_losses"]
     val_losses = checkpoint["val_losses"]

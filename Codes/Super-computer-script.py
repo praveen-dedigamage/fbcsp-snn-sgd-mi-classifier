@@ -253,7 +253,9 @@ if __name__ == "__main__":
     start = time.time()
     #base_directory = r'/scratch/project_2003397/praveen'
     #relative_directory = r'Dataset'
-    base_directory = r'C:/Users/USER/Desktop/fbcsp-snn-mi-classifier/fbcsp-snn-mi-classifier'
+    #base_directory = r'C:/Users/USER/Desktop/fbcsp-snn-mi-classifier/fbcsp-snn-mi-classifier'
+    #relative_directory = r'Dataset'
+    base_directory = r'/Users/hsprde/Documents/GitHub/fbcsp-snn-sgd-mi-classifier'
     relative_directory = r'Dataset'
     
     #print("Checkpoint 1", time.time() - start)

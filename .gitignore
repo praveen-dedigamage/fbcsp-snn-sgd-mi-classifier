@@ -17,6 +17,8 @@
 **/*.fdt
 **/*.asv
 
+
+
 # ======================
 # NOTEBOOK CHECKPOINTS
 # ======================
@@ -72,3 +74,5 @@ Development/*
 # ======================
 .DS_Store
 Thumbs.db
+
+SnnTorchGPU/
