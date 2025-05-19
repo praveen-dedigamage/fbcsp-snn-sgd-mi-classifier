@@ -6,7 +6,7 @@
 [ALLEEG, EEG, CURRENTSET, ALLCOM] = eeglab;
 
 %% Step 2: Load the GDF file
-subjectno = '1';
+subjectno = '3';
 sessionType = 'T';
 subject = ['A0' subjectno sessionType];  % You can change this dynamically
 filename = ['../Dataset/' subject '.gdf'];

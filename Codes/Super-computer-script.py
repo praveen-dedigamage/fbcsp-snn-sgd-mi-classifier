@@ -18,9 +18,11 @@ from itertools import combinations
 from scipy.signal import butter, filtfilt
 from scipy.linalg import eigh
 
+from sklearn.model_selection import StratifiedKFold
+
 # -------------------------- Device --------------------------
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-print(f"✅ Using device: {device}")
+#print(f"✅ Using device: {device}")
 
 # -------------------------- Bandpass Filter --------------------------
 def bandpass_filter(data, lowcut, highcut, fs=250.0, order=5):
@@ -124,7 +126,7 @@ class SNNClassifier(nn.Module):
         return torch.stack(spk2_rec)
 
 # -------------------------- Target Spike Generator --------------------------
-def create_sparse_temporal_population_spikes(y, num_classes, population_per_class, num_steps, batch_size, spike_prob=0.7):
+def create_sparse_temporal_population_spikes(y, num_classes, population_per_class, num_steps, batch_size, target_spike_probability =0.7):
     total_outputs = num_classes * population_per_class
     ideal_spikes = torch.zeros((num_steps, batch_size, total_outputs), device=device)
     for i in range(batch_size):
@@ -133,7 +135,7 @@ def create_sparse_temporal_population_spikes(y, num_classes, population_per_clas
         end = start + population_per_class
         for t in range(num_steps):
             for n in range(start, end):
-                if torch.rand(1).item() < spike_prob:
+                if torch.rand(1).item() < target_spike_probability:
                     ideal_spikes[t, i, n] = 1.0
     return ideal_spikes
 
@@ -152,7 +154,7 @@ def van_rossum_loss(output_spikes, target_spikes, tau=20.0, dt=1.0):
     return torch.mean((f_pred - f_target) ** 2)
 
 # -------------------------- Training and Evaluation --------------------------
-def train_with_ideal_spikes(model, X_train, y_train, X_val, y_val, LR=1e-3, epochs=10, target_sprop = 0.7):
+def train_with_ideal_spikes(model, X_train, y_train, X_val, y_val, LR=1e-3, epochs=10, target_spike_probability = 0.7):
     import time
     from sklearn.metrics import accuracy_score
 
@@ -170,9 +172,9 @@ def train_with_ideal_spikes(model, X_train, y_train, X_val, y_val, LR=1e-3, epoc
     num_steps = X_train.shape[0]
 
     train_ideal_spikes = create_sparse_temporal_population_spikes(
-        y_train, num_classes, population_per_class, num_steps, X_train.shape[1], target_sprop)
+        y_train, num_classes, population_per_class, num_steps, X_train.shape[1], target_spike_probability)
     val_ideal_spikes = create_sparse_temporal_population_spikes(
-        y_val, num_classes, population_per_class, num_steps, X_val.shape[1], target_sprop)
+        y_val, num_classes, population_per_class, num_steps, X_val.shape[1], target_spike_probability)
 
     best_test_acc = 0.0
     best_model_state = None
@@ -181,7 +183,7 @@ def train_with_ideal_spikes(model, X_train, y_train, X_val, y_val, LR=1e-3, epoc
     train_losses, val_losses = [], []
     train_accuracies, val_accuracies = [], []
 
-    print("Checkpoint 3.1", time.time() - start)
+    #print("Checkpoint 3.1", time.time() - start)
 
     for epoch in range(epochs):
         start = time.time()
@@ -214,9 +216,9 @@ def train_with_ideal_spikes(model, X_train, y_train, X_val, y_val, LR=1e-3, epoc
         train_accuracies.append(acc)
         val_accuracies.append(val_acc)
 
-        print(f"Epoch {epoch+1}, Train Loss: {loss.item():.4f}, Train Acc: {acc*100:.2f}%, "
-              f"Test Loss: {val_loss.item():.4f}, Test Acc: {val_acc*100:.2f}%")
-        print(f"Checkpoint 3.1.{epoch}", time.time() - start)
+        #print(f"Epoch {epoch+1}, Train Loss: {loss.item():.4f}, Train Acc: {acc*100:.2f}%, "
+        #      f"Test Loss: {val_loss.item():.4f}, Test Acc: {val_acc*100:.2f}%")
+        #print(f"Checkpoint 3.1.{epoch}", time.time() - start)
         
         sys.stdout.flush()
 
@@ -227,7 +229,8 @@ def train_with_ideal_spikes(model, X_train, y_train, X_val, y_val, LR=1e-3, epoc
 
     if best_model_state is not None:
         model.load_state_dict(best_model_state)
-
+        
+    #print(f"Checkpoint 3.1.{epoch}", time.time() - start)
     return model, train_losses, train_accuracies, val_losses, val_accuracies
 
 
@@ -252,97 +255,121 @@ if __name__ == "__main__":
     #relative_directory = r'Dataset'
     base_directory = r'C:/Users/USER/Desktop/fbcsp-snn-mi-classifier/fbcsp-snn-mi-classifier'
     relative_directory = r'Dataset'
+    
+    #print("Checkpoint 1", time.time() - start)
+    
+    #parameter to sweep
+    lambda_R = float(sys.argv[1]) if len(sys.argv) > 1 else 0.0001
+    freq_bands = ast.literal_eval(sys.argv[2]) if len(sys.argv) > 2 else [(4, 10), (10,14), (14,30)]
+    spiking_prob = float(sys.argv[3]) if len(sys.argv) > 3 else 0.7  # default to 1.0 if not provided
+    
+    base_thresh_val = float(sys.argv[4]) if len(sys.argv) > 4 else 0.001
+    adapt_inc_val = float(sys.argv[5]) if len(sys.argv) > 5 else 0.6
+    decay_val = float(sys.argv[6]) if len(sys.argv) > 6 else 0.95
+    
+    hidden_number_of_Neuron = int(sys.argv[7]) if len(sys.argv) > 7 else 64 
+    neuro_population_per_class = int(sys.argv[8]) if len(sys.argv) > 8 else 20
+    subjectID = int(sys.argv[9]) if len(sys.argv) > 9 else 1
+    
+    n_splits = 10
+    skf = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=42)
+    
+    
+    sessionType = 'T'
+    datafilename = rf"EEG_python_ready_without_ICA_A0{subjectID}{sessionType}.mat"
 
-    with h5py.File(os.path.join(base_directory, relative_directory, 'EEG_python_ready_without_ICA_A01T.mat'), 'r') as file:
-        X_train = file['X'][:]
-        X_train = np.transpose(X_train, (2, 0, 1))
-        y_train = file['y'][:].flatten()
+    with h5py.File(os.path.join(base_directory, relative_directory, datafilename), 'r') as file:
+        X_tr = file['X'][:]
+        X_tr = np.transpose(X_tr, (2, 0, 1))  # shape: (samples, channels, time)
+        y_tr = file['y'][:].flatten()         # shape: (samples,)
 
-    with h5py.File(os.path.join(base_directory, relative_directory, 'EEG_python_ready_without_ICA_A01E.mat'), 'r') as file:
+    sessionType = 'E'
+    datafilename = rf"EEG_python_ready_without_ICA_A0{subjectID}{sessionType}.mat"
+
+    with h5py.File(os.path.join(base_directory, relative_directory, datafilename), 'r') as file:
         X_val = file['X'][:]
         X_val = np.transpose(X_val, (2, 0, 1))
         y_val = file['y'][:].flatten()
+        
+    k_fold_train_accuracies = []
+    k_fold_val_accuracies = []
     
-    print("Checkpoint 1", time.time() - start)
+    # k-fold cross-validation
+    for fold, (train_idx, test_idx) in enumerate(skf.split(X_tr, y_tr)):
+        start = time.time()
+        
+        X_train = X_tr[train_idx]
+        y_train = y_tr[train_idx]
     
-    start = time.time()
+        X_train_filtered_bands = [bandpass_filter(X_train, low, high) for (low, high) in freq_bands]
+        X_val_filtered_bands = [bandpass_filter(X_val, low, high) for (low, high) in freq_bands]
+        
+        X_train_filtered = np.concatenate(X_train_filtered_bands, axis=1)  # shape: (samples, n_channels * n_bands, time)
+        X_val_filtered = np.concatenate(X_val_filtered_bands, axis=1)
     
-    lambda_R = float(sys.argv[1]) if len(sys.argv) > 1 else 0.01
-    freq_bands = ast.literal_eval(sys.argv[2]) if len(sys.argv) > 2 else [(8, 12), (12, 20), (20, 30)]
-
-    X_train_filtered_bands = [bandpass_filter(X_train, low, high) for (low, high) in freq_bands]
-    X_val_filtered_bands = [bandpass_filter(X_val, low, high) for (low, high) in freq_bands]
+        csp = PairwiseCSP(n_components=X_train_filtered.shape[1], selected_classes=[1, 2, 3, 4])
+        csp.fit(X_train_filtered, y_train, reg_lambda=lambda_R)
+        projected_train = csp.transform(X_train_filtered)
+        projected_val = csp.transform(X_val_filtered)
+        
+        #print("Checkpoint 2", time.time() - start)
+        #start = time.time()
+        
+        spike_train_train = encode_projected_signals_to_spikes(projected_train, base_thresh=base_thresh_val, adapt_inc=adapt_inc_val, decay=decay_val).to(device)
+        spike_train_val = encode_projected_signals_to_spikes(projected_val, base_thresh=base_thresh_val, adapt_inc=adapt_inc_val, decay=decay_val).to(device)
     
-    X_train_filtered = np.concatenate(X_train_filtered_bands, axis=1)  # shape: (samples, n_channels * n_bands, time)
-    X_val_filtered = np.concatenate(X_val_filtered_bands, axis=1)
-
-    csp = PairwiseCSP(n_components=X_train_filtered.shape[1], selected_classes=[1, 2, 3, 4])
-    csp.fit(X_train_filtered, y_train, reg_lambda=lambda_R)
-    projected_train = csp.transform(X_train_filtered)
-    projected_val = csp.transform(X_val_filtered)
+        input_size = spike_train_train.shape[2]
+        hidden_size = hidden_number_of_Neuron
+        output_size = len(np.unique(y_train))
+        population_per_class = neuro_population_per_class
     
-    print("Checkpoint 2", time.time() - start)
-    start = time.time()
+        model = SNNClassifier(input_size, hidden_size, output_size, population_per_class).to(device)
+        
+        #print("Checkpoint 3", time.time() - start)
+        #start = time.time()
+        
+        best_model, train_losses, train_accuracies, val_losses, val_accuracies = train_with_ideal_spikes(
+            model,
+            spike_train_train,
+            torch.tensor(y_train - 1).to(device),
+            spike_train_val,
+            torch.tensor(y_val - 1).to(device),
+            LR=1e-3,
+            epochs=2000,
+            target_spike_probability = spiking_prob
+        )
+        #print("Checkpoint 4", time.time() - start)
+        #start = time.time()
     
-    spike_train_train = encode_projected_signals_to_spikes(projected_train).to(device)
-    spike_train_val = encode_projected_signals_to_spikes(projected_val).to(device)
-
-    input_size = spike_train_train.shape[2]
-    hidden_size = 128
-    output_size = len(np.unique(y_train))
-    population_per_class = 10
-
-    model = SNNClassifier(input_size, hidden_size, output_size, population_per_class).to(device)
+        train_acc, train_cm = evaluate(model, spike_train_train, torch.tensor(y_train - 1))
+        test_acc, test_cm = evaluate(model, spike_train_val, torch.tensor(y_val - 1))
     
-    print("Checkpoint 3", time.time() - start)
-    start = time.time()
+        results_dir = os.path.join(base_directory, "results")
+        os.makedirs(results_dir, exist_ok=True)
+        save_path = f'model_and_history_LR{lambda_R}_FB{freq_bands}_SP{spiking_prob}_BaseThres{base_thresh_val}_AdaptInc{adapt_inc_val}_Decay{decay_val}_HN{hidden_number_of_Neuron}_NPPC{neuro_population_per_class}.pth'
+        path_to_model_history = os.path.join(results_dir, save_path)
     
-    best_model, train_losses, train_accuracies, val_losses, val_accuracies = train_with_ideal_spikes(
-        model,
-        spike_train_train,
-        torch.tensor(y_train - 1).to(device),
-        spike_train_val,
-        torch.tensor(y_val - 1).to(device),
-        LR=1e-3,
-        epochs=1000,
-        target_sprop = 0.4
-    )
-    print("Checkpoint 4", time.time() - start)
-    start = time.time()
-
-    train_acc, train_cm = evaluate(model, spike_train_train, torch.tensor(y_train - 1))
-    test_acc, test_cm = evaluate(model, spike_train_val, torch.tensor(y_val - 1))
-
-    results_dir = os.path.join(base_directory, "results")
-    os.makedirs(results_dir, exist_ok=True)
-    summary_file = os.path.join(results_dir, f"summary_lambda_{lambda_R:.2f}.csv")
-
-    with open(summary_file, mode="w", newline="") as file:
-        writer = csv.writer(file)
-        writer.writerow(["Metric", "Value"])
-        writer.writerow(["Train Accuracy", train_acc])
-        writer.writerow(["Test Accuracy", test_acc])
-        writer.writerow([])
-        writer.writerow(["Confusion Matrix - Train"])
-        writer.writerows(train_cm)
-        writer.writerow([])
-        writer.writerow(["Confusion Matrix - Test"])
-        writer.writerows(test_cm)
-
-    print(f"\n✅ Final results saved to: {summary_file}")
-
-    save_path = f'model_and_history{lambda_R:.2f}.pth'
-    torch.save({
-        'model_state_dict': model.state_dict(),
-        'train_losses': train_losses,
-        'train_accuracies': train_accuracies,
-        'val_losses': val_losses,
-        'val_accuracies': val_accuracies,
-        'train_cm': train_cm,
-        'test_cm': test_cm,
-        'train_acc': train_acc,
-        'test_acc': test_acc,
-    }, save_path)
-
-    print(f"\n✅ Final results saved to: {save_path}")
-    print("Checkpoint 5", time.time() - start)
+        
+        torch.save({
+            'model_state_dict': model.state_dict(),
+            'train_losses': train_losses,
+            'train_accuracies': train_accuracies,
+            'val_losses': val_losses,
+            'val_accuracies': val_accuracies,
+            'train_cm': train_cm,
+            'test_cm': test_cm,
+            'train_acc': train_acc,
+            'test_acc': test_acc,
+            'lambda_R': lambda_R,
+            'FB': freq_bands,
+        }, path_to_model_history)
+    
+        k_fold_train_accuracies.append(train_acc)
+        k_fold_val_accuracies.append(test_acc)
+        
+        print("Time for one Fold", time.time() - start)
+    
+    print(rf"K-Fold Train Accurraceis of Subject {subjectID} -> {k_fold_train_accuracies}, mean accuracy = {np.mean(k_fold_train_accuracies)}")
+    print(rf"K-Fold Train Accurraceis of Subject {subjectID} -> {k_fold_val_accuracies}, mean accuracy = {np.mean(k_fold_val_accuracies)}")
+    
+    

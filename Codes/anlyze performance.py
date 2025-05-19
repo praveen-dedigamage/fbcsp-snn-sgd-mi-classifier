@@ -11,7 +11,7 @@ import torch.serialization
 torch.serialization.add_safe_globals({_reconstruct})
 
 # ----------- Settings -----------
-folder_path = "modelhist4"
+folder_path = "model_hist5"
 class_names = ["Left Hand", "Right Hand", "Feet", "Tongue"]
 
 # ----------- Find .pth Files -----------
@@ -58,6 +58,7 @@ for pth_file_path in pth_files:
     train_acc = checkpoint.get("train_acc", checkpoint.get("trian_acc"))
     test_acc = checkpoint["test_acc"]
 
+    """
     # Plot Loss and Accuracy Curves
     epochs = np.arange(1, len(train_losses) + 1)
     fig, axs = plt.subplots(1, 2, figsize=(14, 6))
@@ -83,6 +84,7 @@ for pth_file_path in pth_files:
 
     # Plot Confusion Matrices
     plot_combined_confusion_matrices(train_cm, test_cm, class_names, rank="N/A")
+    """
 
     print(f"✅ Final Train Accuracy: {train_acc * 100:.2f}%")
     print(f"✅ Final Test Accuracy: {test_acc * 100:.2f}%")
@@ -91,8 +93,8 @@ for pth_file_path in pth_files:
     #if selected.lower() == 'y':
     #    selected_models_with_acc.append((pth_file_path, test_acc))
     
-    if test_acc*100 >79.99:
-        selected_models_with_acc.append((pth_file_path, test_acc))
+    #if test_acc*100 > 60.00:
+    selected_models_with_acc.append((pth_file_path, test_acc))
     
 
 # ----------- Step 2: Rank Selected Models by Accuracy -----------
@@ -103,6 +105,9 @@ ranked_indices = [idx for idx, _, _ in ranked_models]
 print("\n🏆 Ranked Selected Models by Test Accuracy:\n")
 for rank, (idx, path, acc) in enumerate(ranked_models, start=1):
     print(f"[Rank {rank}] Index {idx} | Accuracy: {acc * 100:.2f}% | Path: {path}")
+    
+    if rank == 480:
+        input("Press Enter")
 
 # ----------- Step 3: Plot Curves + Confusion Matrices in Ranked Order -----------
 for rank, idx in enumerate(ranked_indices, start=1):
