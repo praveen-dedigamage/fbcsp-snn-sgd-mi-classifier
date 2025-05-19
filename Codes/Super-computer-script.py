@@ -22,7 +22,7 @@ from sklearn.model_selection import StratifiedKFold
 
 # -------------------------- Device --------------------------
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-#print(f"✅ Using device: {device}")
+#print(f" Using device: {device}")
 
 # -------------------------- Bandpass Filter --------------------------
 def bandpass_filter(data, lowcut, highcut, fs=250.0, order=5):
@@ -78,6 +78,28 @@ class PairwiseCSP:
             #X_proj = np.array([trial / np.std(trial) if np.std(trial) > 0 else trial for trial in X_proj])
             projected[(cl1, cl2)] = X_proj
         return projected
+    
+class EarlyStopping:
+    def __init__(self, patience=25, min_delta=1e-4, mode='max'):
+        self.patience = patience
+        self.min_delta = min_delta
+        self.best_score = None
+        self.counter = 0
+        self.early_stop = False
+        self.mode = mode
+
+    def __call__(self, current_score):
+        if self.best_score is None:
+            self.best_score = current_score
+        elif (self.mode == 'max' and current_score < self.best_score + self.min_delta) or \
+             (self.mode == 'min' and current_score > self.best_score - self.min_delta):
+            self.counter += 1
+            if self.counter >= self.patience:
+                self.early_stop = True
+        else:
+            self.best_score = current_score
+            self.counter = 0
+
 
 # -------------------------- Spike Encoding --------------------------
 def encode_projected_signals_to_spikes(projected_data_dict, base_thresh=0.02, adapt_inc=0.04, decay=0.95, seed=None):
@@ -179,12 +201,14 @@ def train_with_ideal_spikes(model, X_train, y_train, X_val, y_val, LR=1e-3, epoc
     best_test_acc = 0.0
     best_model_state = None
 
-    # ⬇️ Initialize history lists
     train_losses, val_losses = [], []
     train_accuracies, val_accuracies = [], []
     train_incorrect_spike_ratios, val_incorrect_spike_ratios = [], []
 
     #print("Checkpoint 3.1", time.time() - start)
+    
+    early_stopper = EarlyStopping(patience=50, min_delta=1e-4, mode='max')  # monitor val_acc
+
 
     for epoch in range(epochs):
         start = time.time()
@@ -231,6 +255,13 @@ def train_with_ideal_spikes(model, X_train, y_train, X_val, y_val, LR=1e-3, epoc
             val_acc = accuracy_score(y_val.cpu(), val_pred.cpu())
             val_loss = loss_fn(val_output, val_ideal_spikes)
             
+            print(val_acc)
+            
+            early_stopper(val_acc)
+            if early_stopper.early_stop:
+                print(f"That's it, I'm stopping at epoch {epoch+1}")
+                break
+ 
             # Incorrect spike ratio for validation
             val_incorrect_spikes = 0.0
             val_total_output_spikes = 0.0
@@ -254,7 +285,6 @@ def train_with_ideal_spikes(model, X_train, y_train, X_val, y_val, LR=1e-3, epoc
             
         model.train()
 
-        # ⬇️ Append to history
         train_losses.append(loss.item())
         val_losses.append(val_loss.item())
         train_accuracies.append(acc)
@@ -270,6 +300,7 @@ def train_with_ideal_spikes(model, X_train, y_train, X_val, y_val, LR=1e-3, epoc
 
         # Save best model
         if val_acc > best_test_acc:
+            print("best model updated")
             best_test_acc = val_acc
             best_model_state = model.state_dict()
 
@@ -394,7 +425,7 @@ if __name__ == "__main__":
     
         results_dir = os.path.join(base_directory, "results")
         os.makedirs(results_dir, exist_ok=True)
-        save_path = f'model_and_history_LR{lambda_R}_FB{freq_bands}_SP{spiking_prob}_BaseThres{base_thresh_val}_AdaptInc{adapt_inc_val}_Decay{decay_val}_HN{hidden_number_of_Neuron}_NPPC{neuro_population_per_class}.pth'
+        save_path = f'model_and_history_LR{lambda_R}_FB{freq_bands}_SP{spiking_prob}_BaseThres{base_thresh_val}_AdaptInc{adapt_inc_val}_Decay{decay_val}_HN{hidden_number_of_Neuron}_NPPC{neuro_population_per_class}_SubID{subjectID}_FOLD{fold}.pth'
         path_to_model_history = os.path.join(results_dir, save_path)
     
         

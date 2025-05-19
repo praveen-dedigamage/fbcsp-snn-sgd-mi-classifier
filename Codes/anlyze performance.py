@@ -55,7 +55,9 @@ for pth_file_path in pth_files:
     train_losses = checkpoint["train_losses"]
     val_losses = checkpoint["val_losses"]
     train_accuracies = checkpoint["train_accuracies"]
+    train_incorrect_spike_ratios = checkpoint["train_incorrect_spike_ratios"]
     val_accuracies = checkpoint["val_accuracies"]
+    val_incorrect_spike_ratios = checkpoint["val_incorrect_spike_ratios"]
     train_cm = checkpoint["train_cm"]
     test_cm = checkpoint["test_cm"]
     train_acc = checkpoint.get("train_acc", checkpoint.get("trian_acc"))
