@@ -329,8 +329,8 @@ def evaluate(model, X_eval, y_eval):
 if __name__ == "__main__":
     start = time.time()
     #ase_directory = r'/scratch/project_2003397/praveen'
-    base_directory = r'C:/Users/USER/Desktop/fbcsp-snn-mi-classifier/fbcsp-snn-mi-classifier'
-    #base_directory = r'/Users/hsprde/Documents/GitHub/fbcsp-snn-sgd-mi-classifier'
+    #base_directory = r'C:/Users/USER/Desktop/fbcsp-snn-mi-classifier/fbcsp-snn-mi-classifier'
+    base_directory = r'/Users/hsprde/Documents/GitHub/fbcsp-snn-sgd-mi-classifier'
     
     relative_directory = r'Dataset'
     
@@ -395,6 +395,8 @@ if __name__ == "__main__":
         
         spike_train_train = encode_projected_signals_to_spikes(projected_train, base_thresh=base_thresh_val, adapt_inc=adapt_inc_val, decay=decay_val).to(device)
         spike_train_val = encode_projected_signals_to_spikes(projected_val, base_thresh=base_thresh_val, adapt_inc=adapt_inc_val, decay=decay_val).to(device)
+    
+        input("Press Enter")
     
         input_size = spike_train_train.shape[2]
         hidden_size = hidden_number_of_Neuron
