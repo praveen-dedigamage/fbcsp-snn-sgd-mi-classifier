@@ -66,13 +66,26 @@ class PairwiseCSP:
             self.pairwise_filters[(cl1, cl2)] = W[:, :self.n_components]
         return self
 
-    def transform(self, X):
+    def transform(self, X, batch_size=256):
         projected = {}
         for (cl1, cl2), W in self.pairwise_filters.items():
-            X_proj = np.array([W.T @ trial for trial in X])
-            #X_proj = np.array([trial / np.std(trial) if np.std(trial) > 0 else trial for trial in X_proj])
+            n_samples = X.shape[0]
+            n_channels = W.shape[1]
+            n_timepoints = X.shape[2]
+            X_proj_list = []
+    
+            for i in range(0, n_samples, batch_size):
+                end = min(i + batch_size, n_samples)
+                batch = X[i:end]
+                batch_proj = np.empty((end - i, n_channels, n_timepoints), dtype=np.float32)
+                for j in range(batch.shape[0]):
+                    batch_proj[j] = W.T @ batch[j]
+                X_proj_list.append(batch_proj)
+    
+            X_proj = np.concatenate(X_proj_list, axis=0)
             projected[(cl1, cl2)] = X_proj
         return projected
+
     
 class EarlyStopping:
     def __init__(self, patience=25, min_delta=1e-4, mode='max'):
@@ -422,9 +435,9 @@ if __name__ == "__main__":
         X_test_filtered_bands = [bandpass_filter(X_test, low, high) for (low, high) in freq_bands]
         X_val_filtered_bands = [bandpass_filter(X_val, low, high) for (low, high) in freq_bands]
         
-        X_train_filtered = np.concatenate(X_train_filtered_bands, axis=1)  # shape: (samples, n_channels * n_bands, time)
-        X_test_filtered = np.concatenate(X_test_filtered_bands, axis=1)
-        X_val_filtered = np.concatenate(X_val_filtered_bands, axis=1)
+        X_train_filtered = np.concatenate(X_train_filtered_bands, axis=1).astype(np.float32)  # shape: (samples, n_channels * n_bands, time)
+        X_test_filtered = np.concatenate(X_test_filtered_bands, axis=1).astype(np.float32)
+        X_val_filtered = np.concatenate(X_val_filtered_bands, axis=1).astype(np.float32)
     
         csp = PairwiseCSP(n_components=X_train_filtered.shape[1], selected_classes=[1, 2, 3, 4])
         csp.fit(X_train_filtered, y_train, reg_lambda=lambda_R)
