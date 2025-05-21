@@ -13,7 +13,7 @@ from sklearn.metrics import accuracy_score, confusion_matrix
 # -------------------------- Device --------------------------
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 mem = psutil.virtual_memory()
-#print(f" Using device: {device}")
+print(f" Using device: {device}")
    
 class EarlyStopping:
     def __init__(self, patience=25, min_delta=1e-4, mode='max'):
@@ -50,14 +50,22 @@ class SNNClassifier(nn.Module):
 
     def forward(self, x):
         x = x.float()
+        batch_size = x.shape[1]
+        num_steps = x.shape[0]
+    
+        # Remove batch_size argument — not supported in snnTorch 0.6+
         mem1 = self.lif1.init_leaky()
         mem2 = self.lif2.init_leaky()
-        spk2_rec = []
-        for step in range(x.size(0)):
+    
+        spk2_rec = torch.zeros((num_steps, batch_size, self.total_outputs), device=x.device)
+    
+        for step in range(num_steps):
             spk1, mem1 = self.lif1(self.fc1(x[step]), mem1)
             spk2, mem2 = self.lif2(self.fc2(spk1), mem2)
-            spk2_rec.append(spk2)
-        return torch.stack(spk2_rec)
+            spk2_rec[step] = spk2
+    
+        return spk2_rec
+
 
 # -------------------------- Target Spike Generator --------------------------
 def create_sparse_temporal_population_spikes(y, num_classes, population_per_class, num_steps, batch_size, target_spike_probability =0.7):
@@ -88,7 +96,7 @@ def van_rossum_loss(output_spikes, target_spikes, tau=20.0, dt=1.0):
     return torch.mean((f_pred - f_target) ** 2)
 
 
-def train_with_ideal_spikes_lazy_batchwise(model, X_train_np, y_train_np, X_test_np, y_test_np, X_val_np, y_val_np, LR=1e-3, epochs=10, target_spike_probability=0.7, batch_size=64):
+def train_with_ideal_spikes_lazy_batchwise(model, X_train_np, y_train_np, X_test_np, y_test_np, X_val_np, y_val_np, LR=1e-3, epochs=10, target_spike_probability=0.7, batch_size=256):
 
     model.to(device)
     model.train()
@@ -96,7 +104,7 @@ def train_with_ideal_spikes_lazy_batchwise(model, X_train_np, y_train_np, X_test
     optimizer = torch.optim.AdamW(model.parameters(), lr=LR, weight_decay=1e-2)
     loss_fn = lambda out, tgt: van_rossum_loss(out, tgt, tau=20.0)
 
-    num_classes = len(np.unique(y_train_np))
+    num_classes = len(np.unique(y_train_np.cpu()))
     population_per_class = model.population_per_class
     num_steps = X_train_np.shape[0]  # time steps
 
@@ -120,14 +128,18 @@ def train_with_ideal_spikes_lazy_batchwise(model, X_train_np, y_train_np, X_test
 
         indices = np.random.permutation(X_train_np.shape[1])
         for i in range(0, len(indices), batch_size):
+            tstart = time.time()
+            
             print("training",i)
+            """
             print("Total RAM:", mem.total / 1024**3, "GB")
             print("Available:", mem.available / 1024**3, "GB")
             if torch.cuda.is_available():
                 print("GPU Memory Allocated:", torch.cuda.memory_allocated() / 1024**2, "MB")
                 print("GPU Memory Reserved: ", torch.cuda.memory_reserved() / 1024**2, "MB")
+            """
             idx = indices[i:i+batch_size]
-            x_batch = torch.tensor(X_train_np[:, idx, :], dtype=torch.uint8, device=device)
+            x_batch = torch.tensor(X_train_np[:, idx, :], dtype=torch.float32, device=device)
             y_batch_np = y_train_np[idx]
             y_batch = y_batch_np.clone().detach().to(dtype=torch.long, device=device) if torch.is_tensor(y_batch_np) else torch.tensor(y_batch_np, dtype=torch.long, device=device)
 
@@ -160,6 +172,8 @@ def train_with_ideal_spikes_lazy_batchwise(model, X_train_np, y_train_np, X_test
                 non_target = output_sample.clone()
                 non_target[:, start:end] = 0
                 total_incorrect_spikes += non_target.sum().item()
+                
+            print("Time for one batch", time.time() - tstart, flush=True)
 
         epoch_acc = accuracy_score(all_labels, all_preds)
         train_losses.append(total_loss)
@@ -171,7 +185,7 @@ def train_with_ideal_spikes_lazy_batchwise(model, X_train_np, y_train_np, X_test
         # --- Validation ---
         model.eval()
         with torch.no_grad():
-            x_val = torch.tensor(X_val_np, dtype=torch.uint8, device=device)
+            x_val = torch.tensor(X_val_np, dtype=torch.float32, device=device)
             y_val = y_val_np.clone().detach().to(dtype=torch.long, device=device) if torch.is_tensor(y_val_np) else torch.tensor(y_val_np, dtype=torch.long, device=device)
 
             val_out = model(x_val)
@@ -214,7 +228,7 @@ def train_with_ideal_spikes_lazy_batchwise(model, X_train_np, y_train_np, X_test
             if torch.cuda.is_available():
                 print("GPU Memory Allocated:", torch.cuda.memory_allocated() / 1024**2, "MB")
                 print("GPU Memory Reserved: ", torch.cuda.memory_reserved() / 1024**2, "MB")
-            x_batch = torch.tensor(X_test_np[:, i:i+batch_size, :], dtype=torch.uint8, device=device)
+            x_batch = torch.tensor(X_test_np[:, i:i+batch_size, :], dtype=torch.float32, device=device)
             y_batch_np = y_test_np[i:i+batch_size]
             y_batch = y_batch_np.clone().detach().to(dtype=torch.long, device=device) if torch.is_tensor(y_batch_np) else torch.tensor(y_batch_np, dtype=torch.long, device=device)
 
@@ -305,8 +319,8 @@ if __name__ == "__main__":
 
     start = time.time()
     #ase_directory = r'/scratch/project_2003397/praveen'
-    #base_directory = r'C:/Users/USER/Desktop/fbcsp-snn-mi-classifier/fbcsp-snn-mi-classifier'
-    base_directory = r'/Users/hsprde/Documents/GitHub/fbcsp-snn-sgd-mi-classifier'
+    base_directory = r'C:/Users/USER/Desktop/fbcsp-snn-mi-classifier/fbcsp-snn-mi-classifier'
+    #base_directory = r'/Users/hsprde/Documents/GitHub/fbcsp-snn-sgd-mi-classifier'
     relative_directory = r'Dataset'
     
     val_subject = int(sys.argv[1]) if len(sys.argv) > 1 else 1 
