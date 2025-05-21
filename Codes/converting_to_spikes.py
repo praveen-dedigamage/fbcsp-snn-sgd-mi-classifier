@@ -8,9 +8,8 @@ import os
 import sys
 import time
 import ast
+import matplotlib.pyplot as plt
 
-from snntorch import surrogate
-from sklearn.metrics import accuracy_score, confusion_matrix
 from itertools import combinations
 from scipy.signal import butter, filtfilt
 from scipy.linalg import eigh
@@ -18,6 +17,27 @@ from scipy.linalg import eigh
 # -------------------------- Device --------------------------
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 #print(f" Using device: {device}")
+
+# -------------------------- Plotting Helper --------------------------
+def plot_trial(spike_tensor, trial_idx=0, title="Spike Raster Plot", save_path=None):
+    # spike_tensor: [time_steps, batch_size, total_channels]
+    spikes = spike_tensor[:, trial_idx, :].cpu().numpy()
+    time_steps, channels = spikes.shape
+
+    fig, ax = plt.subplots(figsize=(10, 6))
+    for ch in range(channels):
+        times = np.where(spikes[:, ch] > 0)[0]
+        ax.scatter(times, [ch] * len(times), s=1, label=f"Ch {ch+1}" if ch < 5 else None)
+    ax.set_title(title)
+    ax.set_xlabel("Time step")
+    ax.set_ylabel("Channels")
+    ax.set_ylim([-1, channels])
+    ax.grid(True)
+    if save_path:
+        plt.savefig(save_path, dpi=300)
+        print(f"✅ Saved plot to {save_path}")
+    else:
+        plt.show()
 
 # -------------------------- Bandpass Filter --------------------------
 def bandpass_filter(data, lowcut, highcut, fs=250.0, order=5):
@@ -94,6 +114,7 @@ def encode_projected_signals_to_spikes(projected_data_dict, base_thresh=0.02, ad
             spike_t = (delta > thresholds).float()
             spikes[t] = spike_t
             thresholds = thresholds * decay + spike_t * adapt_inc
+            print(thresholds)
 
         all_encoded.append(spikes)
 
@@ -114,7 +135,7 @@ if __name__ == "__main__":
     freq_bands = ast.literal_eval(sys.argv[2]) if len(sys.argv) > 2 else [(4, 10), (10,14), (14,30)]
     base_thresh_val = float(sys.argv[3]) if len(sys.argv) > 3 else 0.001
     adapt_inc_val = float(sys.argv[4]) if len(sys.argv) > 4 else 0.6
-    decay_val = float(sys.argv[5]) if len(sys.argv) > 5 else 0.95
+    decay_val = float(sys.argv[5]) if len(sys.argv) > 5 else 0.999
 
     all_subjects = list(range(1, 10))  # A01–A09
 
@@ -141,8 +162,6 @@ if __name__ == "__main__":
             E_labels_dict[subjectID] = y_E
             
     leave_one_out_train_accuracies, leave_one_out_test_accuracies, leave_one_out_val_accuracies = [], [], []
-    
-    print("1")
 
     # Leave-One-Subject-Out Cross Validation
     for val_subject in all_subjects:
@@ -195,7 +214,11 @@ if __name__ == "__main__":
         test_labels  = y_test.astype(np.uint8)
         val_labels   = y_val.astype(np.uint8)
         
-        input("Press Enter")
+        break
+    
+        plot_trial(spike_train_train, trial_idx=0, title=f"Spike Raster: Train Trial 0 - Subject A0{val_subject}")
+        
+        """
 
         # Save everything in one compressed file
         np.savez_compressed(f"spike_trains_with_labels_val_subject_{val_subject}.npz",
@@ -208,6 +231,9 @@ if __name__ == "__main__":
         )
         
         print(f"✅ Saved compressed spike trains with labels {val_subject}.")
+        
+        """
+        
         
         
         
