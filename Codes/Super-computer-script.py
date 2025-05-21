@@ -207,7 +207,7 @@ def train_with_ideal_spikes(model, X_train, y_train, X_val, y_val, LR=1e-3, epoc
 
     #print("Checkpoint 3.1", time.time() - start)
     
-    early_stopper = EarlyStopping(patience=50, min_delta=1e-4, mode='max')  # monitor val_acc
+    early_stopper = EarlyStopping(patience=100, min_delta=1e-4, mode='max')  # monitor val_acc
 
 
     for epoch in range(epochs):
@@ -397,8 +397,6 @@ if __name__ == "__main__":
         
         spike_train_train = encode_projected_signals_to_spikes(projected_train, base_thresh=base_thresh_val, adapt_inc=adapt_inc_val, decay=decay_val).to(device)
         spike_train_val = encode_projected_signals_to_spikes(projected_val, base_thresh=base_thresh_val, adapt_inc=adapt_inc_val, decay=decay_val).to(device)
-    
-        input("Press Enter")
     
         input_size = spike_train_train.shape[2]
         hidden_size = hidden_number_of_Neuron

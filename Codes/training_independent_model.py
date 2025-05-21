@@ -12,7 +12,14 @@ from sklearn.metrics import accuracy_score, confusion_matrix
 
 # -------------------------- Device --------------------------
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+torch.set_num_threads(4)  # Match this to --cpus-per-task in your SLURM script
+print("Torch will use", torch.get_num_threads(), "CPU threads")
+
+
 mem = psutil.virtual_memory()
+
+
+
 print(f" Using device: {device}")
    
 class EarlyStopping:
@@ -96,17 +103,52 @@ def van_rossum_loss(output_spikes, target_spikes, tau=20.0, dt=1.0):
     return torch.mean((f_pred - f_target) ** 2)
 
 
-def train_with_ideal_spikes_lazy_batchwise(model, X_train_np, y_train_np, X_test_np, y_test_np, X_val_np, y_val_np, LR=1e-3, epochs=10, target_spike_probability=0.7, batch_size=1024):
+def evaluate_set(model, data_tensor, label_tensor, loss_fn, num_classes, population_per_class, num_steps, target_spike_probability, batch_size=4096, name="val"):
+    model.eval()
+    total_loss, total_output_spikes, total_incorrect_spikes = 0.0, 0.0, 0.0
+    all_preds, all_labels = [], []
+    start_time = time.time()
 
+    for i in range(0, data_tensor.shape[1], batch_size):
+        x_batch = data_tensor[:, i:i+batch_size, :]
+        y_batch = label_tensor[i:i+batch_size]
+
+        with torch.no_grad():
+            output = model(x_batch)
+            target_spikes = create_sparse_temporal_population_spikes(
+                y_batch, num_classes, population_per_class, num_steps, x_batch.shape[1], target_spike_probability)
+            total_loss += loss_fn(output, target_spikes).item()
+
+            output_sum = output.sum(dim=0)
+            pred = torch.argmax(output_sum.view(x_batch.shape[1], num_classes, population_per_class).sum(dim=2), dim=1)
+            all_preds.extend(pred.cpu().numpy())
+            all_labels.extend(y_batch.cpu().numpy())
+
+            for b in range(x_batch.shape[1]):
+                class_idx = int(y_batch[b].item())
+                start = class_idx * population_per_class
+                end = start + population_per_class
+                sample_out = output[:, b, :]
+                total_output_spikes += sample_out.sum().item()
+                non_target = sample_out.clone()
+                non_target[:, start:end] = 0
+                total_incorrect_spikes += non_target.sum().item()
+
+    acc = accuracy_score(all_labels, all_preds)
+    incorrect_ratio = total_incorrect_spikes / (total_output_spikes + 1e-6)
+    print(f"{name.title()} duration: {time.time() - start_time:.2f} sec", flush=True)
+    return total_loss, acc, incorrect_ratio
+
+def train_with_ideal_spikes_lazy_batchwise(model, X_train_tensor, y_train_tensor, X_test_tensor, y_test_tensor, X_val_tensor, y_val_tensor, LR=1e-3, epochs=10, target_spike_probability=0.7, batch_size=1024):
     model.to(device)
     model.train()
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=LR, weight_decay=1e-2)
     loss_fn = lambda out, tgt: van_rossum_loss(out, tgt, tau=20.0)
 
-    num_classes = len(np.unique(y_train_np.cpu()))
+    num_classes = len(torch.unique(y_train_tensor))
     population_per_class = model.population_per_class
-    num_steps = X_train_np.shape[0]  # time steps
+    num_steps = X_train_tensor.shape[0]  # time steps
 
     best_test_acc = 0.0
     best_model_state = None
@@ -119,6 +161,7 @@ def train_with_ideal_spikes_lazy_batchwise(model, X_train_np, y_train_np, X_test
 
     for epoch in range(epochs):
         etstart = time.time()
+        print(epoch)
         model.train()
         total_loss = 0.0
         all_preds = []
@@ -126,12 +169,14 @@ def train_with_ideal_spikes_lazy_batchwise(model, X_train_np, y_train_np, X_test
         total_output_spikes = 0.0
         total_incorrect_spikes = 0.0
 
-        indices = np.random.permutation(X_train_np.shape[1])
+        indices = torch.randperm(X_train_tensor.shape[1])
         for i in range(0, len(indices), batch_size):
+            tstart = time.time()
+            print("training", i, flush=True)
+
             idx = indices[i:i+batch_size]
-            x_batch = torch.tensor(X_train_np[:, idx, :], dtype=torch.float32, device=device)
-            y_batch_np = y_train_np[idx]
-            y_batch = y_batch_np.clone().detach().to(dtype=torch.long, device=device) if torch.is_tensor(y_batch_np) else torch.tensor(y_batch_np, dtype=torch.long, device=device)
+            x_batch = X_train_tensor[:, idx, :]
+            y_batch = y_train_tensor[idx]
 
             optimizer.zero_grad()
             output = model(x_batch)
@@ -163,6 +208,8 @@ def train_with_ideal_spikes_lazy_batchwise(model, X_train_np, y_train_np, X_test
                 non_target[:, start:end] = 0
                 total_incorrect_spikes += non_target.sum().item()
 
+            print("Time for one batch", time.time() - tstart, flush=True)
+
         epoch_acc = accuracy_score(all_labels, all_preds)
         train_losses.append(total_loss)
         train_accuracies.append(epoch_acc)
@@ -170,78 +217,15 @@ def train_with_ideal_spikes_lazy_batchwise(model, X_train_np, y_train_np, X_test
         train_incorrect_spike_ratio = total_incorrect_spikes / (total_output_spikes + 1e-6)
         train_incorrect_spike_ratios.append(train_incorrect_spike_ratio)
 
-        # --- Validation ---
-        model.eval()
-        with torch.no_grad():
-            x_val = torch.tensor(X_val_np, dtype=torch.float32, device=device)
-            y_val = y_val_np.clone().detach().to(dtype=torch.long, device=device) if torch.is_tensor(y_val_np) else torch.tensor(y_val_np, dtype=torch.long, device=device)
-
-            val_out = model(x_val)
-            val_pred = torch.argmax(
-                val_out.sum(dim=0).view(x_val.shape[1], num_classes, population_per_class).sum(dim=2), dim=1)
-            val_acc = accuracy_score(y_val.cpu(), val_pred.cpu())
-            val_loss = loss_fn(val_out, create_sparse_temporal_population_spikes(
-                y_val, num_classes, population_per_class, num_steps, x_val.shape[1], target_spike_probability))
-
-            val_total_output_spikes = 0.0
-            val_total_incorrect_spikes = 0.0
-            for i in range(x_val.shape[1]):
-                class_idx = int(y_val[i].item())
-                start = class_idx * population_per_class
-                end = start + population_per_class
-                val_sample = val_out[:, i, :]
-                val_total_output_spikes += val_sample.sum().item()
-                non_target = val_sample.clone()
-                non_target[:, start:end] = 0
-                val_total_incorrect_spikes += non_target.sum().item()
-
-            val_incorrect_spike_ratio = val_total_incorrect_spikes / (val_total_output_spikes + 1e-6)
-            val_incorrect_spike_ratios.append(val_incorrect_spike_ratio)
-
-        val_losses.append(val_loss.item())
+        val_loss, val_acc, val_ratio = evaluate_set(model, X_val_tensor, y_val_tensor, loss_fn, num_classes, population_per_class, num_steps, target_spike_probability, batch_size, name="val")
+        val_losses.append(val_loss)
         val_accuracies.append(val_acc)
+        val_incorrect_spike_ratios.append(val_ratio)
 
-        # --- Testing (batch-wise) ---
-        model.eval()
-        all_test_preds = []
-        all_test_labels = []
-        test_total_loss = 0.0
-        test_total_output_spikes = 0.0
-        test_total_incorrect_spikes = 0.0
-
-        for i in range(0, X_test_np.shape[1], batch_size):
-            x_batch = torch.tensor(X_test_np[:, i:i+batch_size, :], dtype=torch.float32, device=device)
-            y_batch_np = y_test_np[i:i+batch_size]
-            y_batch = y_batch_np.clone().detach().to(dtype=torch.long, device=device) if torch.is_tensor(y_batch_np) else torch.tensor(y_batch_np, dtype=torch.long, device=device)
-
-            with torch.no_grad():
-                output = model(x_batch)
-                target_spikes = create_sparse_temporal_population_spikes(
-                    y_batch, num_classes, population_per_class, num_steps, x_batch.shape[1], target_spike_probability)
-                test_total_loss += loss_fn(output, target_spikes).item()
-
-                output_sum = output.sum(dim=0)
-                pred = torch.argmax(
-                    output_sum.view(x_batch.shape[1], num_classes, population_per_class).sum(dim=2), dim=1)
-                all_test_preds.extend(pred.cpu().numpy())
-                all_test_labels.extend(y_batch.cpu().numpy())
-
-                for b in range(x_batch.shape[1]):
-                    class_idx = int(y_batch[b].item())
-                    start = class_idx * population_per_class
-                    end = start + population_per_class
-                    sample_out = output[:, b, :]
-                    test_total_output_spikes += sample_out.sum().item()
-                    non_target = sample_out.clone()
-                    non_target[:, start:end] = 0
-                    test_total_incorrect_spikes += non_target.sum().item()
-
-        test_acc = accuracy_score(all_test_labels, all_test_preds)
-        test_losses.append(test_total_loss)
+        test_loss, test_acc, test_ratio = evaluate_set(model, X_test_tensor, y_test_tensor, loss_fn, num_classes, population_per_class, num_steps, target_spike_probability, batch_size, name="test")
+        test_losses.append(test_loss)
         test_accuracies.append(test_acc)
-
-        test_incorrect_spike_ratio = test_total_incorrect_spikes / (test_total_output_spikes + 1e-6)
-        test_incorrect_spike_ratios.append(test_incorrect_spike_ratio)
+        test_incorrect_spike_ratios.append(test_ratio)
 
         if test_acc > best_test_acc:
             best_test_acc = test_acc
@@ -252,42 +236,36 @@ def train_with_ideal_spikes_lazy_batchwise(model, X_train_np, y_train_np, X_test
             print(f"Early stopping at epoch {epoch+1}")
             break
 
-        print(f"Epoch {epoch+1} | Train Acc: {epoch_acc:.4f} | Val Acc: {val_acc:.4f} | Test Acc: {test_acc:.4f} | Incorrect Spike Ratio: {train_incorrect_spike_ratio:.4f} / {val_incorrect_spike_ratio:.4f} / {test_incorrect_spike_ratio:.4f}")
-        print("Epoch Time = ", time.time()-etstart, flush=True)
+        print(f"Epoch {epoch+1} | Train Acc: {epoch_acc:.4f} | Val Acc: {val_acc:.4f} | Test Acc: {test_acc:.4f} | Incorrect Spike Ratio: {train_incorrect_spike_ratio:.4f} / {val_ratio:.4f} / {test_ratio:.4f}", flush=True)
+        epoch_duration = time.time() - etstart
+        print(f"Time for one epoch: {epoch_duration:.2f} seconds", flush=True)
+
     if best_model_state:
         model.load_state_dict(best_model_state)
 
     return model, train_losses, train_accuracies, train_incorrect_spike_ratios, test_losses, test_accuracies, test_incorrect_spike_ratios, val_losses, val_accuracies, val_incorrect_spike_ratios
 
-def evaluate(model, X_eval, y_eval, batch_size=64):
-
+def evaluate(model, X_eval_tensor, y_eval_tensor, batch_size=64):
     model.eval()
 
     all_preds = []
     all_labels = []
 
     with torch.no_grad():
-        for i in range(0, X_eval.shape[1], batch_size):
-            print("Evaluating", i)
-            print("Total RAM:", mem.total / 1024**3, "GB")
-            print("Available:", mem.available / 1024**3, "GB")
-            if torch.cuda.is_available():
-                print("GPU Memory Allocated:", torch.cuda.memory_allocated() / 1024**2, "MB")
-                print("GPU Memory Reserved: ", torch.cuda.memory_reserved() / 1024**2, "MB")
+        for i in range(0, X_eval_tensor.shape[1], batch_size):
+            x_batch = X_eval_tensor[:, i:i+batch_size, :].to(device)
+            y_batch = y_eval_tensor[i:i+batch_size].to(device)
 
-            x_batch_np = X_eval[:, i:i+batch_size, :]
-            y_batch_np = y_eval[i:i+batch_size]
-
-            # Convert to tensors inside the loop
-            x_batch = x_batch_np.clone().detach().to(dtype=torch.uint8, device=device) if torch.is_tensor(x_batch_np) else torch.tensor(x_batch_np, dtype=torch.uint8, device=device)
-            y_batch = y_batch_np.clone().detach().to(dtype=torch.long, device=device) if torch.is_tensor(y_batch_np) else torch.tensor(y_batch_np, dtype=torch.long, device=device)
-
-            output = model(x_batch)
+            output = model(x_batch)  # Shape: (T, batch, neurons)
             num_classes = len(torch.unique(y_batch))
             population_per_class = model.population_per_class
-            output_sum = output.sum(dim=0)
+
+            output_sum = output.sum(dim=0)  # (batch, output_neurons)
             pred = torch.argmax(
-                output_sum.view(x_batch.shape[1], num_classes, population_per_class).sum(dim=2), dim=1)
+                output_sum.view(x_batch.shape[1], num_classes, population_per_class).sum(dim=2),
+                dim=1
+            )
+
             all_preds.extend(pred.cpu().numpy())
             all_labels.extend(y_batch.cpu().numpy())
 
@@ -301,7 +279,7 @@ if __name__ == "__main__":
 
     start = time.time()
     #ase_directory = r'/scratch/project_2003397/praveen'
-    base_directory = r'C:/Users/USER/Desktop/fbcsp-snn-mi-classifier/fbcsp-snn-mi-classifier'
+    #base_directory = r'C:/Users/USER/Desktop/fbcsp-snn-mi-classifier/fbcsp-snn-mi-classifier'
     #base_directory = r'/Users/hsprde/Documents/GitHub/fbcsp-snn-sgd-mi-classifier'
     relative_directory = r'Dataset'
     
@@ -313,13 +291,14 @@ if __name__ == "__main__":
     data = np.load(f"spike_data/spike_trains_with_labels_val_subject_{val_subject}.npz")
 
     # Extract and convert to PyTorch tensors
-    spike_train_train = data["train"]
-    spike_train_test  = data["test"]
-    spike_train_val   = data["val"]
+    spike_train_train = torch.tensor(data["train"], dtype=torch.float32).to(device)
+    spike_train_test  = torch.tensor(data["test"],  dtype=torch.float32).to(device)
+    spike_train_val   = torch.tensor(data["val"],   dtype=torch.float32).to(device)
     
-    y_train = data["y_train"]
-    y_test  = data["y_test"]
-    y_val   = data["y_val"]    
+    y_train = torch.tensor(data["y_train"] - 1, dtype=torch.long).to(device)
+    y_test  = torch.tensor(data["y_test"]  - 1, dtype=torch.long).to(device)
+    y_val   = torch.tensor(data["y_val"]   - 1, dtype=torch.long).to(device)
+ 
     
     input_size = spike_train_train.shape[2]
     hidden_size = hidden_number_of_Neuron
@@ -329,26 +308,27 @@ if __name__ == "__main__":
     model = SNNClassifier(input_size, hidden_size, output_size, population_per_class).to(device)
     
     best_model, train_losses, train_accuracies, train_incorrect_spike_ratios, test_losses, test_accuracies, test_incorrect_spike_ratios, val_losses, val_accuracies, val_incorrect_spike_ratios = train_with_ideal_spikes_lazy_batchwise(
-        model,
-        spike_train_train,
-        torch.tensor(y_train - 1).to(device),
-        spike_train_test,
-        torch.tensor(y_test - 1).to(device),
-        spike_train_val,
-        torch.tensor(y_val - 1).to(device),
-        LR=1e-3,
-        epochs=2,
-        target_spike_probability = spiking_prob
-    )
+    model,
+    spike_train_train,
+    y_train,
+    spike_train_test,
+    y_test,
+    spike_train_val,
+    y_val,
+    LR=1e-3,
+    epochs=2,
+    target_spike_probability=spiking_prob)
+    
 
-    train_acc, train_cm = evaluate(model, spike_train_train, torch.tensor(y_train - 1))
-    test_acc, test_cm = evaluate(model, spike_train_test, torch.tensor(y_test - 1))
-    val_acc, val_cm = evaluate(model, spike_train_val, torch.tensor(y_val - 1))
+    train_acc, train_cm = evaluate(best_model, spike_train_train, y_train)
+    test_acc, test_cm   = evaluate(best_model, spike_train_test, y_test)
+    val_acc, val_cm     = evaluate(best_model, spike_train_val, y_val)
 
-    results_dir = os.path.join(base_directory, "results")
-    os.makedirs(results_dir, exist_ok=True)
-    save_path = f'model_and_history_LeaveOutSubID{val_subject}.pth'
-    path_to_model_history = os.path.join(results_dir, save_path)
+
+    #results_dir = os.path.join(base_directory, "results")
+    #os.makedirs(results_dir, exist_ok=True)
+    save_path = f'results/model_and_history_LeaveOutSubID{val_subject}.pth'
+    #path_to_model_history = os.path.join(results_dir, save_path)
 
     
     torch.save({
@@ -366,7 +346,6 @@ if __name__ == "__main__":
         'test_cm': test_cm,
         'train_acc': train_acc,
         'test_acc': test_acc,
-    }, path_to_model_history)
+    }, save_path)
     
     print("Time for one Fold", time.time() - start)
-    
