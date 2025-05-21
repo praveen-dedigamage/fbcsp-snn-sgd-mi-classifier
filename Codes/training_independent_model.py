@@ -96,7 +96,7 @@ def van_rossum_loss(output_spikes, target_spikes, tau=20.0, dt=1.0):
     return torch.mean((f_pred - f_target) ** 2)
 
 
-def train_with_ideal_spikes_lazy_batchwise(model, X_train_np, y_train_np, X_test_np, y_test_np, X_val_np, y_val_np, LR=1e-3, epochs=10, target_spike_probability=0.7, batch_size=256):
+def train_with_ideal_spikes_lazy_batchwise(model, X_train_np, y_train_np, X_test_np, y_test_np, X_val_np, y_val_np, LR=1e-3, epochs=10, target_spike_probability=0.7, batch_size=1024):
 
     model.to(device)
     model.train()
@@ -118,7 +118,7 @@ def train_with_ideal_spikes_lazy_batchwise(model, X_train_np, y_train_np, X_test
     early_stopper = EarlyStopping(patience=50, min_delta=1e-4, mode='max')
 
     for epoch in range(epochs):
-        print(epoch)
+        etstart = time.time()
         model.train()
         total_loss = 0.0
         all_preds = []
@@ -128,16 +128,6 @@ def train_with_ideal_spikes_lazy_batchwise(model, X_train_np, y_train_np, X_test
 
         indices = np.random.permutation(X_train_np.shape[1])
         for i in range(0, len(indices), batch_size):
-            tstart = time.time()
-            
-            print("training",i)
-            """
-            print("Total RAM:", mem.total / 1024**3, "GB")
-            print("Available:", mem.available / 1024**3, "GB")
-            if torch.cuda.is_available():
-                print("GPU Memory Allocated:", torch.cuda.memory_allocated() / 1024**2, "MB")
-                print("GPU Memory Reserved: ", torch.cuda.memory_reserved() / 1024**2, "MB")
-            """
             idx = indices[i:i+batch_size]
             x_batch = torch.tensor(X_train_np[:, idx, :], dtype=torch.float32, device=device)
             y_batch_np = y_train_np[idx]
@@ -172,8 +162,6 @@ def train_with_ideal_spikes_lazy_batchwise(model, X_train_np, y_train_np, X_test
                 non_target = output_sample.clone()
                 non_target[:, start:end] = 0
                 total_incorrect_spikes += non_target.sum().item()
-                
-            print("Time for one batch", time.time() - tstart, flush=True)
 
         epoch_acc = accuracy_score(all_labels, all_preds)
         train_losses.append(total_loss)
@@ -222,12 +210,6 @@ def train_with_ideal_spikes_lazy_batchwise(model, X_train_np, y_train_np, X_test
         test_total_incorrect_spikes = 0.0
 
         for i in range(0, X_test_np.shape[1], batch_size):
-            print("testing", i)
-            print("Total RAM:", mem.total / 1024**3, "GB")
-            print("Available:", mem.available / 1024**3, "GB")
-            if torch.cuda.is_available():
-                print("GPU Memory Allocated:", torch.cuda.memory_allocated() / 1024**2, "MB")
-                print("GPU Memory Reserved: ", torch.cuda.memory_reserved() / 1024**2, "MB")
             x_batch = torch.tensor(X_test_np[:, i:i+batch_size, :], dtype=torch.float32, device=device)
             y_batch_np = y_test_np[i:i+batch_size]
             y_batch = y_batch_np.clone().detach().to(dtype=torch.long, device=device) if torch.is_tensor(y_batch_np) else torch.tensor(y_batch_np, dtype=torch.long, device=device)
@@ -271,7 +253,7 @@ def train_with_ideal_spikes_lazy_batchwise(model, X_train_np, y_train_np, X_test
             break
 
         print(f"Epoch {epoch+1} | Train Acc: {epoch_acc:.4f} | Val Acc: {val_acc:.4f} | Test Acc: {test_acc:.4f} | Incorrect Spike Ratio: {train_incorrect_spike_ratio:.4f} / {val_incorrect_spike_ratio:.4f} / {test_incorrect_spike_ratio:.4f}")
-
+        print("Epoch Time = ", time.time()-etstart, flush=True)
     if best_model_state:
         model.load_state_dict(best_model_state)
 
@@ -387,3 +369,4 @@ if __name__ == "__main__":
     }, path_to_model_history)
     
     print("Time for one Fold", time.time() - start)
+    

@@ -211,7 +211,7 @@ def train_with_ideal_spikes(model, X_train, y_train, X_val, y_val, LR=1e-3, epoc
 
 
     for epoch in range(epochs):
-        start = time.time()
+        estart = time.time()
 
         optimizer.zero_grad()
         output_spikes = model(X_train)
@@ -303,6 +303,8 @@ def train_with_ideal_spikes(model, X_train, y_train, X_val, y_val, LR=1e-3, epoc
             print("best model updated")
             best_test_acc = val_acc
             best_model_state = model.state_dict()
+            
+        print(f"Epoch Time", time.time() - estart)
 
     if best_model_state is not None:
         model.load_state_dict(best_model_state)
@@ -445,6 +447,8 @@ if __name__ == "__main__":
             'lambda_R': lambda_R,
             'FB': freq_bands,
         }, path_to_model_history)
+        
+        break
     
         k_fold_train_accuracies.append(train_acc)
         k_fold_val_accuracies.append(test_acc)
