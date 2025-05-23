@@ -11,7 +11,7 @@ import torch.serialization
 torch.serialization.add_safe_globals({_reconstruct})
 
 # ----------- Settings -----------
-folder_path = "results1"
+folder_path = "results2"
 class_names = ["Left Hand", "Right Hand", "Feet", "Tongue"]
 
 # ----------- Find .pth Files -----------
@@ -55,9 +55,9 @@ for pth_file_path in pth_files:
     train_losses = checkpoint["train_losses"]
     val_losses = checkpoint["val_losses"]
     train_accuracies = checkpoint["train_accuracies"]
-    #train_incorrect_spike_ratios = checkpoint["train_incorrect_spike_ratios"]
+    train_incorrect_spike_ratios = checkpoint["train_incorrect_spike_ratios"]
     val_accuracies = checkpoint["val_accuracies"]
-    #val_incorrect_spike_ratios = checkpoint["val_incorrect_spike_ratios"]
+    val_incorrect_spike_ratios = checkpoint["val_incorrect_spike_ratios"]
     train_cm = checkpoint["train_cm"]
     test_cm = checkpoint["test_cm"]
     train_acc = checkpoint.get("train_acc", checkpoint.get("trian_acc"))
@@ -127,9 +127,9 @@ for rank, idx in enumerate(ranked_indices, start=1):
     train_losses = checkpoint["train_losses"]
     val_losses = checkpoint["val_losses"]
     train_accuracies = checkpoint["train_accuracies"]
-    #train_incorrect_spike_ratios = checkpoint["train_incorrect_spike_ratios"]
+    train_incorrect_spike_ratios = checkpoint["train_incorrect_spike_ratios"]
     val_accuracies = checkpoint["val_accuracies"]
-    #val_incorrect_spike_ratios = checkpoint["val_incorrect_spike_ratios"]
+    val_incorrect_spike_ratios = checkpoint["val_incorrect_spike_ratios"]
     train_cm = checkpoint["train_cm"]
     test_cm = checkpoint["test_cm"]
     train_acc = checkpoint.get("train_acc", checkpoint.get("trian_acc"))
@@ -137,7 +137,7 @@ for rank, idx in enumerate(ranked_indices, start=1):
 
     # Plot Curves
     epochs = np.arange(1, len(train_losses) + 1)
-    fig, axs = plt.subplots(1, 2, figsize=(14, 5))
+    fig, axs = plt.subplots(1, 3, figsize=(14, 5))
 
     axs[0].plot(epochs, train_losses, label="Train Loss")
     axs[0].plot(epochs, val_losses, label="Validation Loss")
@@ -147,7 +147,7 @@ for rank, idx in enumerate(ranked_indices, start=1):
     axs[0].legend()
     axs[0].grid(True)
     
-    """
+    epochs = np.arange(1, len(train_incorrect_spike_ratios) + 1)
     axs[1].plot(epochs, train_incorrect_spike_ratios, label="Train incorrect spike ratios")
     axs[1].plot(epochs, val_incorrect_spike_ratios, label="Test incorrect spike ratios")
     axs[1].set_title("Incorrect spike ratios")
@@ -155,15 +155,15 @@ for rank, idx in enumerate(ranked_indices, start=1):
     axs[1].set_ylabel("Loss")
     axs[1].legend()
     axs[1].grid(True)
-    """
 
-    axs[1].plot(epochs, train_accuracies, label="Train Accuracy")
-    axs[1].plot(epochs, val_accuracies, label="Validation Accuracy")
-    axs[1].set_title("Accuracy Curve")
-    axs[1].set_xlabel("Epoch")
-    axs[1].set_ylabel("Accuracy")
-    axs[1].legend()
-    axs[1].grid(True)
+    epochs = np.arange(1, len(train_accuracies) + 1)
+    axs[2].plot(epochs,train_accuracies, label="Train Accuracy")
+    axs[2].plot(epochs,val_accuracies, label="Validation Accuracy")
+    axs[2].set_title("Accuracy Curve")
+    axs[2].set_xlabel("Epoch")
+    axs[2].set_ylabel("Accuracy")
+    axs[2].legend()
+    axs[2].grid(True)
 
     plt.suptitle(f"Model Rank {rank} | Final Test Accuracy: {test_acc * 100:.2f}%", fontsize=14)
     plt.tight_layout(rect=[0, 0, 1, 0.95])
