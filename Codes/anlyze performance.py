@@ -11,7 +11,7 @@ import torch.serialization
 torch.serialization.add_safe_globals({_reconstruct})
 
 # ----------- Settings -----------
-folder_path = "results2"
+folder_path = "results_4"
 class_names = ["Left Hand", "Right Hand", "Feet", "Tongue"]
 
 # ----------- Find .pth Files -----------
@@ -98,8 +98,8 @@ for pth_file_path in pth_files:
     #if selected.lower() == 'y':
     #    selected_models_with_acc.append((pth_file_path, test_acc))
     
-    if test_acc*100 > 60.00:
-        selected_models_with_acc.append((pth_file_path, test_acc))
+    #if test_acc*100 > 60.00:
+    selected_models_with_acc.append((pth_file_path, test_acc))
     
 
 # ----------- Step 2: Rank Selected Models by Accuracy -----------
