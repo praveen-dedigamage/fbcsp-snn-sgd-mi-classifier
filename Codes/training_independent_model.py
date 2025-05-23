@@ -57,12 +57,14 @@ class SNNClassifier(nn.Module):
 
     def forward(self, x):
         x = x.float()
+        assert x.device == next(self.fc1.parameters()).device, "Input and model must be on the same device!"
+    
         batch_size = x.shape[1]
         num_steps = x.shape[0]
     
-        # Remove batch_size argument — not supported in snnTorch 0.6+
-        mem1 = self.lif1.init_leaky()
-        mem2 = self.lif2.init_leaky()
+        # Initialize memory states manually on correct device
+        mem1 = torch.zeros(batch_size, self.fc1.out_features, device=x.device)
+        mem2 = torch.zeros(batch_size, self.total_outputs, device=x.device)
     
         spk2_rec = torch.zeros((num_steps, batch_size, self.total_outputs), device=x.device)
     
@@ -72,6 +74,7 @@ class SNNClassifier(nn.Module):
             spk2_rec[step] = spk2
     
         return spk2_rec
+
 
 
 # -------------------------- Target Spike Generator --------------------------
@@ -158,6 +161,10 @@ def train_with_ideal_spikes_lazy_batchwise(model, X_train_tensor, y_train_tensor
     train_incorrect_spike_ratios, val_incorrect_spike_ratios, test_incorrect_spike_ratios = [], [], []
 
     early_stopper = EarlyStopping(patience=50, min_delta=1e-4, mode='max')
+    
+    print("Model on device:", next(model.parameters()).device, flush=True)
+    print("Data tensor device:", X_train_tensor.device, flush=True)
+
 
     for epoch in range(epochs):
         etstart = time.time()
@@ -169,10 +176,14 @@ def train_with_ideal_spikes_lazy_batchwise(model, X_train_tensor, y_train_tensor
         total_output_spikes = 0.0
         total_incorrect_spikes = 0.0
 
-        indices = torch.randperm(X_train_tensor.shape[1])
+        indices = torch.randperm(X_train_tensor.shape[1], device=device)
+
         for i in range(0, len(indices), batch_size):
             tstart = time.time()
             print("training", i, flush=True)
+            print(f"GPU mem allocated: {torch.cuda.memory_allocated() / 1e6:.1f} MB",flush=True)
+            print(f"GPU mem reserved : {torch.cuda.memory_reserved() / 1e6:.1f} MB",flush=True)
+
 
             idx = indices[i:i+batch_size]
             x_batch = X_train_tensor[:, idx, :]
@@ -233,7 +244,7 @@ def train_with_ideal_spikes_lazy_batchwise(model, X_train_tensor, y_train_tensor
 
         early_stopper(test_acc)
         if early_stopper.early_stop:
-            print(f"Early stopping at epoch {epoch+1}")
+            print(f"Early stopping at epoch {epoch+1}", flush=True)
             break
 
         print(f"Epoch {epoch+1} | Train Acc: {epoch_acc:.4f} | Val Acc: {val_acc:.4f} | Test Acc: {test_acc:.4f} | Incorrect Spike Ratio: {train_incorrect_spike_ratio:.4f} / {val_ratio:.4f} / {test_ratio:.4f}", flush=True)
@@ -302,7 +313,7 @@ if __name__ == "__main__":
     
     input_size = spike_train_train.shape[2]
     hidden_size = hidden_number_of_Neuron
-    output_size = len(np.unique(y_train))
+    output_size = len(np.unique(y_train.cpu().numpy()))
     population_per_class = neuro_population_per_class
 
     model = SNNClassifier(input_size, hidden_size, output_size, population_per_class).to(device)

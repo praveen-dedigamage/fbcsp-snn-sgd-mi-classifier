@@ -330,7 +330,7 @@ def evaluate(model, X_eval, y_eval):
 # -------------------------- Main Script --------------------------
 if __name__ == "__main__":
     start = time.time()
-    #ase_directory = r'/scratch/project_2003397/praveen'
+    #base_directory = r'/scratch/project_2003397/praveen'
     #base_directory = r'C:/Users/USER/Desktop/fbcsp-snn-mi-classifier/fbcsp-snn-mi-classifier'
     base_directory = r'/Users/hsprde/Documents/GitHub/fbcsp-snn-sgd-mi-classifier'
     
@@ -445,8 +445,6 @@ if __name__ == "__main__":
             'lambda_R': lambda_R,
             'FB': freq_bands,
         }, path_to_model_history)
-        
-        break
     
         k_fold_train_accuracies.append(train_acc)
         k_fold_val_accuracies.append(test_acc)
