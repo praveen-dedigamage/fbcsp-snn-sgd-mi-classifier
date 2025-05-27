@@ -1,3 +1,4 @@
+
 import torch
 import matplotlib.pyplot as plt
 import numpy as np
@@ -11,7 +12,7 @@ import torch.serialization
 torch.serialization.add_safe_globals({_reconstruct})
 
 # ----------- Settings -----------
-folder_path = "results_4"
+folder_path = "results_9"
 class_names = ["Left Hand", "Right Hand", "Feet", "Tongue"]
 
 # ----------- Find .pth Files -----------
