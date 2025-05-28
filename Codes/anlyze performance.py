@@ -1,3 +1,4 @@
+
 import torch
 import matplotlib.pyplot as plt
 import numpy as np
@@ -97,7 +98,6 @@ for pth_file_path in pth_files:
     #selected = input("⏩ Enter 'y' if this model should be selected: ")
     #if selected.lower() == 'y':
     #    selected_models_with_acc.append((pth_file_path, test_acc))
-    
     selected_models_with_acc.append((pth_file_path, test_acc))
     
 
@@ -146,7 +146,7 @@ for rank, idx in enumerate(ranked_indices, start=1):
     axs[0].legend()
     axs[0].grid(True)
     
-
+    epochs = np.arange(1, len(train_incorrect_spike_ratios) + 1)
     axs[1].plot(epochs, train_incorrect_spike_ratios, label="Train incorrect spike ratios")
     axs[1].plot(epochs, val_incorrect_spike_ratios, label="Test incorrect spike ratios")
     axs[1].set_title("Incorrect spike ratios")
@@ -154,7 +154,7 @@ for rank, idx in enumerate(ranked_indices, start=1):
     axs[1].set_ylabel("Loss")
     axs[1].legend()
     axs[1].grid(True)
-
+    
     axs[2].plot(epochs, train_accuracies, label="Train Accuracy")
     axs[2].plot(epochs, val_accuracies, label="Validation Accuracy")
     axs[2].set_title("Accuracy Curve")
