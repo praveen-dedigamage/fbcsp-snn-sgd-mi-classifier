@@ -445,6 +445,7 @@ if __name__ == "__main__":
     parser.add_argument('hidden_neurons', type=int, nargs='?', default=64, help="Number of hidden neurons")
     parser.add_argument('population_per_class', type=int, nargs='?', default=20, help="Number of output neurons per class")
     parser.add_argument('subject_id', type=int, nargs='?', default=1, help="Subject ID to load data")
+    parser.add_argument('CSP_Compenents_Per_band', type=int, nargs='?', default=22, help="Subject ID to load data")
     args = parser.parse_args()
 
     base_dir = os.path.dirname(os.path.abspath(__file__))
@@ -471,7 +472,7 @@ if __name__ == "__main__":
 
     # Fit CSP
     csp = PairwiseCSP(
-        n_components=X_train_filtered.shape[1],
+        n_components=(int((X_train_filtered.shape[1])/X_train.shape[1])*args.CSP_Compenents_Per_band),
         selected_classes=[1, 2, 3, 4],
         reg_lambda=args.lambda_R
     )
@@ -524,7 +525,7 @@ if __name__ == "__main__":
         spikes_val,
         y_test_tensor,
         lr=1e-3,
-        epochs=2000,
+        epochs=2,
         target_spike_prob=args.spiking_prob,
         weight_decay = wd
     )
