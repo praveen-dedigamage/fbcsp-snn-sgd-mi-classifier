@@ -51,7 +51,6 @@ def parse_filename(filename):
         "CSP_Components_Per_band": CSP_Components_Per_band
     }
 
-
 # ----------- 2. Data loading (matches your training script) -----------
 def load_data(base_dir, subject_id, session_type='E'):
     filename = f"EEG_python_ready_1250_sample_pntsA0{subject_id}{session_type}.mat"
@@ -64,37 +63,43 @@ def load_data(base_dir, subject_id, session_type='E'):
 
 # ----------- 3. Forward method to extract hidden layer membrane traces -----------
 def forward_with_hidden(self, x):
+    # For 3-layer SNN: input → hidden1 → hidden2 → output
     mem1 = self.lif1.init_leaky()
     mem2 = self.lif2.init_leaky()
-    spk1_rec = []
-    mem1_rec = []
-    spk2_rec = []
-    mem2_rec = []
+    mem3 = self.lif3.init_leaky()
+    spk1_rec, mem1_rec = [], []
+    spk2_rec, mem2_rec = [], []
+    spk3_rec, mem3_rec = [], []
     in_rec = []
     for t in range(x.size(0)):
-        # Input to first linear (input layer activations): x[t]
         in_rec.append(x[t].detach().cpu().numpy())
         out1 = self.fc1(x[t])
-        out1_dropped = self.dropout1(out1)
-        spk1, mem1 = self.lif1(out1_dropped, mem1)
+        out1 = self.dropout1(out1)
+        spk1, mem1 = self.lif1(out1, mem1)
         spk1_rec.append(spk1.detach().cpu().numpy())
-        mem1_rec.append(mem1.detach().cpu().numpy())  # Hidden layer membrane
+        mem1_rec.append(mem1.detach().cpu().numpy())
         out2 = self.fc2(spk1)
-        out2_dropped = self.dropout2(out2)
-        spk2, mem2 = self.lif2(out2_dropped, mem2)
+        out2 = self.dropout2(out2)
+        spk2, mem2 = self.lif2(out2, mem2)
         spk2_rec.append(spk2.detach().cpu().numpy())
-        mem2_rec.append(mem2.detach().cpu().numpy())  # Output layer membrane
-    # Shapes: [time, batch, ...]
+        mem2_rec.append(mem2.detach().cpu().numpy())
+        out3 = self.fc3(spk2)
+        out3 = self.dropout3(out3)
+        spk3, mem3 = self.lif3(out3, mem3)
+        spk3_rec.append(spk3.detach().cpu().numpy())
+        mem3_rec.append(mem3.detach().cpu().numpy())
     return {
         'input': np.stack(in_rec),
-        'hidden_spikes': np.stack(spk1_rec),
-        'hidden_mem': np.stack(mem1_rec),
-        'output_spikes': np.stack(spk2_rec),
-        'output_mem': np.stack(mem2_rec),
+        'hidden1_spikes': np.stack(spk1_rec),
+        'hidden1_mem': np.stack(mem1_rec),
+        'hidden2_spikes': np.stack(spk2_rec),
+        'hidden2_mem': np.stack(mem2_rec),
+        'output_spikes': np.stack(spk3_rec),
+        'output_mem': np.stack(mem3_rec),
     }
 
 # ----------- 4. Main extraction loop -----------
-model_directory = "Trained models/Subject_2"
+model_directory = "Trained models/Subject_1"
 base_dir = os.path.abspath(".")
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -120,7 +125,6 @@ for f in all_files:
 # Sort by test accuracy, descending
 sorted_files = [f for f, acc in sorted(file_acc, key=lambda x: x[1], reverse=True)]
 
-
 for filename in sorted_files:
     if not filename.endswith(".pth"):
         continue
@@ -129,7 +133,7 @@ for filename in sorted_files:
     params = parse_filename(filename)
     for key, value in params.items():
        print (f"{key} : {value}")
-            
+
     # Windows long-path fix (if needed)
     if sys.platform.startswith("win"):
         abs_path = os.path.abspath(file_path)
@@ -137,11 +141,10 @@ for filename in sorted_files:
         if not abs_path.startswith(r'\\?\\'):
             file_path = r'\\?\\' + abs_path
 
-
     # Load checkpoint
     try:
         checkpoint = torch.load(file_path, map_location='cpu', weights_only=False)
-        print(checkpoint['test_acc'])
+        print("Test accuracy:", checkpoint['test_acc'])
     except Exception as e:
         print(f"  → failed to load: {e}")
         continue
@@ -153,8 +156,6 @@ for filename in sorted_files:
         X_test_filtered.append(bandpass_filter(X_eval, low, high))
     X_test_filtered = np.concatenate(X_test_filtered, axis=1)
     
-    #This should be the trimming point
-
     n_components = int((X_test_filtered.shape[1] / X_eval.shape[1]) * params["CSP_Components_Per_band"])
     csp = PairwiseCSP(
         n_components=n_components,
@@ -180,6 +181,7 @@ for filename in sorted_files:
     beta = 0.95
     dropout_prob = params["dropout_prob"]
 
+    # Must use SNNClassifier with three layers as defined previously
     model = SNNClassifier(input_size, hidden_size, output_size, population_per_class, beta, dropout_prob)
     model.load_state_dict(checkpoint['model_state_dict'])
     model = model.to(DEVICE)
@@ -192,26 +194,30 @@ for filename in sorted_files:
     
     with torch.no_grad():
         act = model(spikes_val)  # act is now a dict with all activations
-        print("Hidden activations shape:", act['hidden_mem'].shape)
+        print("Hidden1 activations shape:", act['hidden1_mem'].shape)
+        print("Hidden2 activations shape:", act['hidden2_mem'].shape)
+        print("Output activations shape:", act['output_mem'].shape)
         
-        # (4) Save all activations
-        #np.savez(f"{filename}_activations.npz", **act)
+        # (4) Save all activations if desired:
+        # np.savez(f"{filename}_activations.npz", **act)
         
         def plot_multi_raster(act, filename, y_eval, num_trials=10):
             # All shapes: [time, batch, units]
             spikes_input = (act['input'] > 0).astype(int)
-            spikes_hidden = (act['hidden_spikes'] > 0).astype(int)
+            spikes_hidden1 = (act['hidden1_spikes'] > 0).astype(int)
+            spikes_hidden2 = (act['hidden2_spikes'] > 0).astype(int)
             spikes_output = (act['output_spikes'] > 0).astype(int)
             n_trials = min(num_trials, spikes_input.shape[1])
             time_steps = spikes_input.shape[0]
             layers = [
                 (spikes_input, 'Input'),
-                (spikes_hidden, 'Hidden'),
+                (spikes_hidden1, 'Hidden1'),
+                (spikes_hidden2, 'Hidden2'),
                 (spikes_output, 'Output'),
             ]
             for trial in range(n_trials):
                 label = y_eval[trial] if y_eval is not None else '?'
-                fig, axes = plt.subplots(3, 1, figsize=(14, 8), sharex=True)
+                fig, axes = plt.subplots(len(layers), 1, figsize=(14, 12), sharex=True)
                 for i, (spike_arr, layer_name) in enumerate(layers):
                     n_units = spike_arr.shape[2]
                     ax = axes[i]
@@ -226,10 +232,6 @@ for filename in sorted_files:
                 plt.tight_layout(rect=[0, 0.03, 1, 0.95])
                 plt.show()
 
-        
         plot_multi_raster(act, filename, y_eval, num_trials=10)
 
         input("Press Enter to continue…")
-
-
-

@@ -164,6 +164,7 @@ class SNNClassifier(nn.Module):
         population_per_class=5,
         beta=0.95,
         dropout_prob=0.5,
+        second_hidden_size=None  # New parameter for flexibility
     ):
         super().__init__()
         self.population_per_class = population_per_class
@@ -171,13 +172,21 @@ class SNNClassifier(nn.Module):
         self.beta = beta
         self.dropout_prob = dropout_prob
 
+        # Allow custom size for third layer, or default to hidden_size
+        if second_hidden_size is None:
+            second_hidden_size = hidden_size
+
         self.fc1 = nn.Linear(input_size, hidden_size)
         self.dropout1 = nn.Dropout(self.dropout_prob)
         self.lif1 = snn.Leaky(beta=self.beta, spike_grad=surrogate.fast_sigmoid())
 
-        self.fc2 = nn.Linear(hidden_size, self.total_outputs)
+        self.fc2 = nn.Linear(hidden_size, second_hidden_size)
         self.dropout2 = nn.Dropout(self.dropout_prob)
         self.lif2 = snn.Leaky(beta=self.beta, spike_grad=surrogate.fast_sigmoid())
+
+        self.fc3 = nn.Linear(second_hidden_size, self.total_outputs)
+        self.dropout3 = nn.Dropout(self.dropout_prob)
+        self.lif3 = snn.Leaky(beta=self.beta, spike_grad=surrogate.fast_sigmoid())
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
@@ -186,8 +195,9 @@ class SNNClassifier(nn.Module):
         """
         mem1 = self.lif1.init_leaky()
         mem2 = self.lif2.init_leaky()
+        mem3 = self.lif3.init_leaky()
         
-        spk2_rec: List[torch.Tensor] = []
+        spk3_rec: List[torch.Tensor] = []
 
         for t in range(x.size(0)):
             out1 = self.fc1(x[t])
@@ -197,10 +207,13 @@ class SNNClassifier(nn.Module):
             out2 = self.fc2(spk1)
             out2 = self.dropout2(out2)
             spk2, mem2 = self.lif2(out2, mem2)
+
+            out3 = self.fc3(spk2)
+            out3 = self.dropout3(out3)
+            spk3, mem3 = self.lif3(out3, mem3)
+            spk3_rec.append(spk3)
             
-            spk2_rec.append(spk2)
-            
-        return torch.stack(spk2_rec)
+        return torch.stack(spk3_rec)
 
 
 
@@ -504,12 +517,13 @@ if __name__ == "__main__":
     # Initialize model
     input_size = spikes_train.shape[2]
     hidden_size = args.hidden_neurons
+    second_hidden_size = args.second_hidden_neurons if hasattr(args, 'second_hidden_neurons') else hidden_size
     output_size = len(np.unique(y_train))
     population_per_class = args.population_per_class
     beta = 0.95
     dropout_prob = 0.5
     
-    model = SNNClassifier(input_size, hidden_size, output_size, population_per_class, beta, dropout_prob)
+    model = SNNClassifier(input_size, hidden_size, output_size, population_per_class, beta, dropout_prob, second_hidden_size)
     
     wd = 1e-1
 
