@@ -7,48 +7,46 @@ import numpy as np
 from types import MethodType
 import h5py
 import matplotlib.pyplot as plt
-from eeg_csp_snn_classifier_ss import SNNClassifier, bandpass_filter, PairwiseCSP, encode_projected_signals_to_spikes
+from eeg_csp_snn_classifier_ss_4_layers import SNNClassifier, bandpass_filter, PairwiseCSP, encode_projected_signals_to_spikes
 
 # ----------- 1. Utility to extract parameters from filename -----------
-def parse_filename(filename):
-    """
-    Extracts parameters from a model filename using regex.
-    Supports both single and multiple frequency bands.
-    """
+def parse_filename(filename, default_n_csp_per_band=22):
     m = re.match(
-        r'model_LR([0-9.eE+-]+)_FB(\[.*?\])_SP([0-9.]+)_BT([0-9.eE+-]+)_AI([0-9.eE+-]+)_D([0-9.]+)_HN([0-9]+)_NPC([0-9]+)_Sub([0-9]+)_weight_decay([0-9.eE+-]+)_dropout_prob([0-9.]+)_N_CSP_per_band([0-9]+)\.pth$',
+        r'model_LR([0-9.eE+-]+)_FB(\[.*?\])_SP([0-9.]+)_BT([0-9.eE+-]+)_AI([0-9.eE+-]+)_D([0-9.]+)_HN([0-9]+)_NPC([0-9]+)_Sub([0-9]+)_weight_decay([0-9.eE+-]+)_dropout_prob([0-9.]+)(?:_N_CSP_per_band([0-9]+))?\.pth$',
         filename
     )
     if not m:
         raise ValueError(f"Could not parse filename: {filename}")
     lambda_R = float(m.group(1))
     freq_bands = ast.literal_eval(m.group(2))
-    # always wrap as list if it's a tuple, so downstream is robust
-    if isinstance(freq_bands, tuple):
-        freq_bands = [freq_bands]
-    spiking_prob = float(m.group(3))
-    base_thresh = float(m.group(4))
-    adapt_inc = float(m.group(5))
-    decay = float(m.group(6))
-    hidden_neurons = int(m.group(7))
-    population_per_class = int(m.group(8))
-    subject_id = int(m.group(9))
+    sp = float(m.group(3))
+    bt = float(m.group(4))
+    ai = float(m.group(5))
+    d = float(m.group(6))
+    hn = int(m.group(7))
+    npc = int(m.group(8))
+    subject = int(m.group(9))
     weight_decay = float(m.group(10))
     dropout_prob = float(m.group(11))
-    CSP_Components_Per_band = int(m.group(12))
+    # CSP group may be None
+    if m.group(12) is not None:
+        n_csp_per_band = int(m.group(12))
+    else:
+        n_csp_per_band = default_n_csp_per_band  # fallback
+
     return {
-        "lambda_R": lambda_R,
-        "freq_bands": freq_bands,
-        "spiking_prob": spiking_prob,
-        "base_thresh": base_thresh,
-        "adapt_inc": adapt_inc,
-        "decay": decay,
-        "hidden_neurons": hidden_neurons,
-        "population_per_class": population_per_class,
-        "subject_id": subject_id,
-        "weight_decay": weight_decay,
-        "dropout_prob": dropout_prob,
-        "CSP_Components_Per_band": CSP_Components_Per_band
+        'lambda_R': lambda_R,
+        'freq_bands': freq_bands,
+        'sp': sp,
+        'base_thresh': bt,
+        'adapt_inc': ai,
+        'decay': d,
+        'hidden_neurons': hn,
+        'population_per_class': npc,
+        'subject_id': subject,
+        'weight_decay': weight_decay,
+        'dropout_prob': dropout_prob,
+        'CSP_Components_Per_band': n_csp_per_band
     }
 
 # ----------- 2. Data loading (matches your training script) -----------
