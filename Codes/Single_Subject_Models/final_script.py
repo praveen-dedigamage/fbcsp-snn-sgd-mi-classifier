@@ -1,3 +1,11 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+Created on Mon Aug  4 15:53:43 2025
+
+@author: hsprde
+"""
+
 import os
 import sys
 import time
@@ -122,6 +130,39 @@ class PairwiseCSP:
             
         return projected
 
+class RestVsOneCSP:
+    def __init__(self, n_components=2, reg_lambda=0.01):
+        self.n_components = n_components
+        self.reg_lambda = reg_lambda
+        self.filters = {}
+        self.classes = []
+
+    def fit(self, X, y):
+        self.classes = [cls for cls in np.unique(y) if cls != 0]
+
+        for mi_class in self.classes:
+            idx = np.where((y == 0) | (y == mi_class))[0]
+            X_pair = X[idx]
+            y_pair = y[idx]
+
+            covs = [np.cov(trial) for trial in X_pair]
+            covs = np.array([cov / np.trace(cov) for cov in covs])
+            cov1 = np.mean(covs[y_pair == 0], axis=0)
+            cov2 = np.mean(covs[y_pair == mi_class], axis=0)
+
+            I = np.eye(cov1.shape[0])
+            cov1 = (1 - self.reg_lambda) * cov1 + self.reg_lambda * I
+            cov2 = (1 - self.reg_lambda) * cov2 + self.reg_lambda * I
+
+            eigvals, eigvecs = eigh(cov2, cov1 + cov2)
+            W = eigvecs[:, np.argsort(eigvals)[::-1]]
+            self.filters[mi_class] = W[:, :self.n_components]
+
+    def transform(self, X):
+        projected = {}
+        for mi_class, W in self.filters.items():
+            projected[mi_class] = np.einsum('ij,tjk->tik', W.T, X)
+        return projected
 
 # -------------------------- Spike Encoding --------------------------
 
@@ -164,7 +205,6 @@ class SNNClassifier(nn.Module):
         population_per_class=5,
         beta=0.95,
         dropout_prob=0.5,
-        second_hidden_size=None  # New parameter for flexibility
     ):
         super().__init__()
         self.population_per_class = population_per_class
@@ -172,21 +212,13 @@ class SNNClassifier(nn.Module):
         self.beta = beta
         self.dropout_prob = dropout_prob
 
-        # Allow custom size for third layer, or default to hidden_size
-        if second_hidden_size is None:
-            second_hidden_size = hidden_size
-
         self.fc1 = nn.Linear(input_size, hidden_size)
         self.dropout1 = nn.Dropout(self.dropout_prob)
         self.lif1 = snn.Leaky(beta=self.beta, spike_grad=surrogate.fast_sigmoid())
 
-        self.fc2 = nn.Linear(hidden_size, second_hidden_size)
+        self.fc2 = nn.Linear(hidden_size, self.total_outputs)
         self.dropout2 = nn.Dropout(self.dropout_prob)
         self.lif2 = snn.Leaky(beta=self.beta, spike_grad=surrogate.fast_sigmoid())
-
-        self.fc3 = nn.Linear(second_hidden_size, self.total_outputs)
-        self.dropout3 = nn.Dropout(self.dropout_prob)
-        self.lif3 = snn.Leaky(beta=self.beta, spike_grad=surrogate.fast_sigmoid())
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
@@ -195,9 +227,8 @@ class SNNClassifier(nn.Module):
         """
         mem1 = self.lif1.init_leaky()
         mem2 = self.lif2.init_leaky()
-        mem3 = self.lif3.init_leaky()
         
-        spk3_rec: List[torch.Tensor] = []
+        spk2_rec: List[torch.Tensor] = []
 
         for t in range(x.size(0)):
             out1 = self.fc1(x[t])
@@ -207,13 +238,10 @@ class SNNClassifier(nn.Module):
             out2 = self.fc2(spk1)
             out2 = self.dropout2(out2)
             spk2, mem2 = self.lif2(out2, mem2)
-
-            out3 = self.fc3(spk2)
-            out3 = self.dropout3(out3)
-            spk3, mem3 = self.lif3(out3, mem3)
-            spk3_rec.append(spk3)
             
-        return torch.stack(spk3_rec)
+            spk2_rec.append(spk2)
+            
+        return torch.stack(spk2_rec)
 
 
 
@@ -330,6 +358,8 @@ def train_with_ideal_spikes( model, X_train, y_train, X_val, y_val, lr = 1e-3, e
     train_targets = create_sparse_temporal_population_spikes(
         y_train, num_classes, population_per_class, num_steps, batch_size, target_spike_prob
     )
+    
+    num_steps, batch_size, _ = X_val.shape
     test_targets = create_sparse_temporal_population_spikes(
         y_val, num_classes, population_per_class, num_steps, X_val.shape[1], target_spike_prob
     )
@@ -421,26 +451,35 @@ def evaluate(modelr,X_eval,y_eval):
     model.eval()
     X_eval = X_eval.to(DEVICE)
     y_eval = y_eval.to(DEVICE)
-    num_classes = len(torch.unique(y_eval))
+    
     population_per_class = model.population_per_class
+    total_outputs = model.total_outputs
+    num_classes = total_outputs // population_per_class
+    
+    print(num_classes)
 
     with torch.no_grad():
         output = model(X_eval)
         time_steps, batch_size, _ = output.shape
         summed = output.sum(dim=0)
+        
         class_scores = summed.view(batch_size, num_classes, population_per_class).sum(dim=2)
         preds = torch.argmax(class_scores, dim=1)
 
     acc = accuracy_score(y_eval.cpu(), preds.cpu())
-    cm = confusion_matrix(y_eval.cpu(), preds.cpu())
+    cm = confusion_matrix(y_eval.cpu(), preds.cpu(), labels=[0, 1, 2, 3, 4])
     return acc, cm
 
 
 # -------------------------- Data Loading --------------------------
 
 def load_data(base_dir, subject_id, session_type = 'T'):
-    filename = f"EEG_python_ready_1250_sample_pntsA0{subject_id}{session_type}.mat"
-    path = os.path.join(base_dir, 'Dataset', filename)
+    if session_type == 'T':
+        filename = f"EEG_restMI_split_3s_A0{subject_id}{session_type}.mat"
+        path = os.path.join(base_dir, 'New_Dataset', filename)
+    elif session_type == 'E':
+        filename = f"EEG_python_ready_1250_sample_pntsA0{subject_id}{session_type}.mat"
+        path = os.path.join(base_dir, 'Dataset', filename)
     with h5py.File(path, 'r') as f:
         X = f['X'][:]
         X = np.transpose(X, (2, 0, 1))
@@ -473,6 +512,31 @@ if __name__ == "__main__":
 
     # Load train and validation data
     X_train, y_train = load_data(base_dir, args.subject_id, session_type='T')
+    
+    # Separate rest and MI trials
+    rest_indices = np.where(y_train == 0)[0]
+    mi_indices = np.where(y_train > 0)[0]
+    
+    # Count number of trials per MI class (1–4)
+    mi_class_counts = [np.sum(y_train == cls) for cls in range(1, 5)]
+    min_per_class = min(mi_class_counts)  # or use int(np.mean(...)) if you prefer
+    
+    # Number of rest trials to sample
+    n_rest = min_per_class  # or int(np.mean(mi_class_counts)) for avg per class
+    
+    # Randomly sample N rest trials
+    np.random.seed(42)  # reproducible
+    selected_rest_indices = np.random.choice(rest_indices, size=n_rest, replace=False)
+    
+    # Combine selected rest with all MI trials
+    balanced_indices = np.concatenate([selected_rest_indices, mi_indices])
+    np.random.shuffle(balanced_indices)
+    
+    # Final balanced dataset
+    X_train_balanced = X_train[balanced_indices]
+    y_train_balanced = y_train[balanced_indices]
+
+    
     X_val, y_val = load_data(base_dir, args.subject_id, session_type='E')
 
     # Bandpass filtering for each frequency band
@@ -480,19 +544,26 @@ if __name__ == "__main__":
     X_test_filtered: List[np.ndarray] = []
     
     for low, high in freq_bands:
-        X_train_filtered.append(bandpass_filter(X_train, low, high))
+        X_train_filtered.append(bandpass_filter(X_train_balanced, low, high))
         X_test_filtered.append(bandpass_filter(X_val, low, high))
 
     X_train_filtered = np.concatenate(X_train_filtered, axis=1)  # (samples, channels*bands, time)
     X_test_filtered = np.concatenate(X_test_filtered, axis=1)
 
     # Fit CSP
+    
     csp = PairwiseCSP(
         n_components=(int((X_train_filtered.shape[1])/X_train.shape[1])*args.CSP_Compenents_Per_band),
-        selected_classes=[1, 2, 3, 4],
+        selected_classes=[0, 1, 2, 3, 4],
         reg_lambda=args.lambda_R
     )
-    csp.fit(X_train_filtered, y_train)
+    """
+    csp = RestVsOneCSP(
+    n_components=(int((X_train_filtered.shape[1]) / X_train.shape[1]) * args.CSP_Compenents_Per_band),
+    reg_lambda=args.lambda_R
+    )
+    """
+    csp.fit(X_train_filtered, y_train_balanced)
     projected_train = csp.transform(X_train_filtered)
     projected_val = csp.transform(X_test_filtered)
 
@@ -511,19 +582,18 @@ if __name__ == "__main__":
     ).to(DEVICE)
 
     # Prepare labels (zero-indexed)
-    y_train_tensor = torch.tensor(y_train - 1, dtype=torch.long, device=DEVICE)
-    y_test_tensor = torch.tensor(y_val - 1, dtype=torch.long, device=DEVICE)
+    y_train_tensor = torch.tensor(y_train_balanced, dtype=torch.long, device=DEVICE)
+    y_test_tensor = torch.tensor(y_val, dtype=torch.long, device=DEVICE)
 
     # Initialize model
     input_size = spikes_train.shape[2]
     hidden_size = args.hidden_neurons
-    second_hidden_size = args.second_hidden_neurons if hasattr(args, 'second_hidden_neurons') else hidden_size
-    output_size = len(np.unique(y_train))
+    output_size = len(np.unique(y_train_balanced))
     population_per_class = args.population_per_class
     beta = 0.95
     dropout_prob = 0.5
     
-    model = SNNClassifier(input_size, hidden_size, output_size, population_per_class, beta, dropout_prob, second_hidden_size)
+    model = SNNClassifier(input_size, hidden_size, output_size, population_per_class, beta, dropout_prob)
     
     wd = 1e-1
 
