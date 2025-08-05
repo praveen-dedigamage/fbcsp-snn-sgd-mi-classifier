@@ -180,6 +180,7 @@ for filename, acc in sorted_files:
     for low, high in freq_band_list:
         X_test_filtered.append(bandpass_filter(X_eval, low, high))
     X_test_filtered = np.concatenate(X_test_filtered, axis=1)
+    X_test_filtered = X_test_filtered[:, :, :]
     print("############")
     
     n_components = int((X_test_filtered.shape[1] / X_eval.shape[1]) * 22)
@@ -233,22 +234,74 @@ for filename, acc in sorted_files:
                 (spikes_hidden, 'Hidden'),
                 (spikes_output, 'Output'),
             ]
-            for trial in range(n_trials):
+            correct_results = 0
+            true_labels = []
+            pred_labels = []
+            
+            Do_Plots = True
+            
+            for trial in range(y_eval.shape[0]):
+                
+                print(f'\n--- Output Spike Counts (Grouped by 20) for Trial {trial} ---')
+                spike_arr = spikes_output  # only output layer
+                n_units = spike_arr.shape[2]
+                spike_counts = np.sum(spike_arr[:, trial, :], axis=0)  # shape: (n_units,)
+                
+                n_groups = (n_units + 19) // 20  # ceil division
+                
+                max_group_sum = -1
+                max_group_idx = -1
+                
+                for group_idx in range(n_groups):
+                    start = group_idx * 20
+                    end = min(start + 20, n_units)
+                    group_sum = np.sum(spike_counts[start:end])
+                    print(f'  Group {group_idx + 1} (Units {start}–{end - 1}): {group_sum} spikes')
+                    
+                    if group_sum > max_group_sum:
+                        max_group_sum = group_sum
+                        max_group_idx = group_idx
+                
                 label = y_eval[trial] if y_eval is not None else '?'
-                fig, axes = plt.subplots(3, 1, figsize=(14, 8), sharex=True)
-                for i, (spike_arr, layer_name) in enumerate(layers):
-                    n_units = spike_arr.shape[2]
-                    ax = axes[i]
-                    for h in range(n_units):
-                        spike_times = np.where(spike_arr[:, trial, h])[0]
-                        ax.vlines(spike_times, h + 0.5, h + 1.5, color='k', linewidth=0.5)
-                    ax.set_ylim(0.5, n_units + 0.5)
-                    ax.set_ylabel(f'{layer_name} unit')
-                    ax.set_title(f'{layer_name} Layer Raster')
-                axes[-1].set_xlabel('Time step')
-                plt.suptitle(f'All Layer Rasters: {filename} | Trial {trial} | Label: {label}')
-                plt.tight_layout(rect=[0, 0.03, 1, 0.95])
-                plt.show()
+                prediction = max_group_idx
+                
+                true_labels.append(label)
+                pred_labels.append(prediction)
+
+                
+                if label == prediction:
+                    correct_results = correct_results + 1
+                    
+                if Do_Plots == True:
+                
+                    for j in range(n_trials):
+                        fig, axes = plt.subplots(3, 1, figsize=(14, 8), sharex=True)
+                        for i, (spike_arr, layer_name) in enumerate(layers):
+                            n_units = spike_arr.shape[2]
+                            ax = axes[i]
+                            for h in range(n_units):
+                                spike_times = np.where(spike_arr[:, trial, h])[0]
+                                ax.vlines(spike_times, h + 0.5, h + 1.5, color='k', linewidth=0.5)
+                            ax.set_ylim(0.5, n_units + 0.5)
+                            ax.set_ylabel(f'{layer_name} unit')
+                            ax.set_title(f'{layer_name} Layer Raster')
+                        axes[-1].set_xlabel('Time step')
+                        plt.suptitle(f'All Layer Rasters: {filename} | Trial {trial} | Label: {label} | Pred: {max_group_idx}')
+                        plt.tight_layout(rect=[0, 0.03, 1, 0.95])
+                        plt.show()
+                        if j+1 == n_trials:
+                            Do_Plots = False
+                    
+            from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay
+
+            cm = confusion_matrix(true_labels, pred_labels)
+            disp = ConfusionMatrixDisplay(confusion_matrix=cm)
+            disp.plot()
+            plt.show()
+
+
+            print(correct_results)
+            print(n_trials)
                 
         plot_multi_raster(act, filename, y_eval)
         input("Press Enter to continue…")

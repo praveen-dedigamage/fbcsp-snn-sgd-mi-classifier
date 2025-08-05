@@ -8,7 +8,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 
 # -------------------- Settings --------------------
-FOLDER_PATH = "results_1"
+FOLDER_PATH = "results_2"
 CLASS_NAMES = ["Left Hand", "Right Hand", "Feet", "Tongue"]
 SELECTION_THRESHOLD = 0.60  # Only keep models with test_acc > 60%
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
