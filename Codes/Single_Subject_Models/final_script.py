@@ -135,7 +135,7 @@ class RestVsOneCSP:
         self.n_components = n_components
         self.reg_lambda = reg_lambda
         self.filters = {}
-        self.classes = []
+        self.classes = []      
 
     def fit(self, X, y):
         self.classes = [cls for cls in np.unique(y) if cls != 0]
@@ -478,7 +478,8 @@ def load_data(base_dir, subject_id, session_type = 'T'):
         filename = f"EEG_restMI_split_3s_A0{subject_id}{session_type}.mat"
         path = os.path.join(base_dir, 'New_Dataset', filename)
     elif session_type == 'E':
-        filename = f"EEG_python_ready_1250_sample_pntsA0{subject_id}{session_type}.mat"
+        #filename = f"EEG_python_ready_1250_sample_pntsA0{subject_id}{session_type}.mat"
+        filename = f"EEG_restMI_split_3s_A0{subject_id}{session_type}.mat"
         path = os.path.join(base_dir, 'Dataset', filename)
     with h5py.File(path, 'r') as f:
         X = f['X'][:]
@@ -517,7 +518,7 @@ if __name__ == "__main__":
     rest_indices = np.where(y_train == 0)[0]
     mi_indices = np.where(y_train > 0)[0]
     
-    # Count number of trials per MI class (1–4)
+    # Count number of trials per MI class (1–5)
     mi_class_counts = [np.sum(y_train == cls) for cls in range(1, 5)]
     min_per_class = min(mi_class_counts)  # or use int(np.mean(...)) if you prefer
     
