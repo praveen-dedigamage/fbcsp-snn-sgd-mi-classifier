@@ -135,7 +135,7 @@ class RestVsOneCSP:
         self.n_components = n_components
         self.reg_lambda = reg_lambda
         self.filters = {}
-        self.classes = []      
+        self.classes = []
 
     def fit(self, X, y):
         self.classes = [cls for cls in np.unique(y) if cls != 0]
@@ -476,11 +476,11 @@ def evaluate(modelr,X_eval,y_eval):
 def load_data(base_dir, subject_id, session_type = 'T'):
     if session_type == 'T':
         filename = f"EEG_restMI_split_3s_A0{subject_id}{session_type}.mat"
-        path = os.path.join(base_dir, 'New_Dataset', filename)
+        path = os.path.join(base_dir, 'New_Dataset_2', filename)
     elif session_type == 'E':
         #filename = f"EEG_python_ready_1250_sample_pntsA0{subject_id}{session_type}.mat"
         filename = f"EEG_restMI_split_3s_A0{subject_id}{session_type}.mat"
-        path = os.path.join(base_dir, 'Dataset', filename)
+        path = os.path.join(base_dir, 'New_Dataset_2', filename)
     with h5py.File(path, 'r') as f:
         X = f['X'][:]
         X = np.transpose(X, (2, 0, 1))
