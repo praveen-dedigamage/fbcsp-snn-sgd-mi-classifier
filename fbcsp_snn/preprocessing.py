@@ -60,7 +60,8 @@ def bandpass_filter(
 def _normalised_cov(X: np.ndarray) -> np.ndarray:
     """Return trace-normalised covariance matrices for a set of trials."""
     covs = np.array([np.cov(trial) for trial in X])
-    return covs / covs.trace(axis1=1, axis2=2, keepdims=True)
+    traces = covs.trace(axis1=1, axis2=2)[:, np.newaxis, np.newaxis]
+    return covs / traces
 
 
 def _regularised(cov: np.ndarray, reg_lambda: float) -> np.ndarray:
