@@ -11,9 +11,15 @@ from typing import List, Optional, Tuple
 
 @dataclass
 class Config:
+    # Data source
+    source: str = "file"                # "file" | "moabb"
+    moabb_dataset: str = "BNCI2014_001" # used when source="moabb"
+    tmin: float = 0.5                   # epoch start (s) relative to cue
+    tmax: float = 3.5                   # epoch end   (s) relative to cue
+
     # Subject / paths
     subject_id: int = 1
-    data_dir: Optional[Path] = None     # resolved at runtime when None
+    data_dir: Optional[Path] = None     # resolved at runtime when None (file mode)
     results_dir: Optional[Path] = None  # resolved at runtime when None
 
     # Preprocessing
@@ -49,6 +55,29 @@ class Config:
 
 
 def _add_shared_args(parser: argparse.ArgumentParser) -> None:
+    # Data source
+    parser.add_argument(
+        "--source",
+        choices=["file", "moabb"],
+        default="file",
+        help="'file' loads .mat files from --data-dir; 'moabb' downloads a public dataset",
+    )
+    parser.add_argument(
+        "--moabb-dataset",
+        type=str,
+        default="BNCI2014_001",
+        metavar="NAME",
+        help="MOABB dataset name (used when --source=moabb). "
+             "Options: BNCI2014_001, PhysionetMI, Cho2017, BNCI2015_001",
+    )
+    parser.add_argument(
+        "--tmin", type=float, default=0.5,
+        help="Epoch start in seconds relative to cue (moabb source)",
+    )
+    parser.add_argument(
+        "--tmax", type=float, default=3.5,
+        help="Epoch end in seconds relative to cue (moabb source)",
+    )
     parser.add_argument("--subject-id", type=int, default=1, metavar="N")
     parser.add_argument("--data-dir", type=Path, default=None, metavar="PATH")
     parser.add_argument("--results-dir", type=Path, default=None, metavar="PATH")
@@ -125,6 +154,10 @@ def config_from_args(args: argparse.Namespace) -> Config:
     freq_bands: List[Tuple[int, int]] = ast.literal_eval(args.freq_bands)
 
     cfg = Config(
+        source=args.source,
+        moabb_dataset=args.moabb_dataset,
+        tmin=args.tmin,
+        tmax=args.tmax,
         subject_id=args.subject_id,
         data_dir=args.data_dir,
         results_dir=args.results_dir,
