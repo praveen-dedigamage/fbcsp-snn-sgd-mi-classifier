@@ -35,16 +35,17 @@ def evaluate(
     confusion_matrix : ndarray, shape ``(n_classes, n_classes)``
     """
     model.eval()
-    X = X.to(device)
-    y = y.to(device)
+    X = X.to(device, non_blocking=True)
+    y = y.to(device, non_blocking=True)
 
     population_per_class = model.population_per_class
     num_classes = model.total_outputs // population_per_class
+    use_amp = device.type == "cuda"
 
-    with torch.no_grad():
+    with torch.no_grad(), torch.autocast(device_type=device.type, enabled=use_amp):
         out_spk, _, _, _ = model(X)
         batch_size = out_spk.size(1)
-        summed = out_spk.sum(dim=0)  # (batch, total_outputs)
+        summed = out_spk.float().sum(dim=0)  # float32 for argmax stability
         class_scores = summed.view(batch_size, num_classes, population_per_class).sum(dim=2)
         preds = class_scores.argmax(dim=1)
 
@@ -61,8 +62,8 @@ def calculate_feature_importance(
     """Compute per-neuron discriminative importance scores.
 
     Importance is the standard deviation across classes of each neuron's
-    mean-subtracted average spike count.  A higher score means the neuron's
-    activity varies more across classes, making it more discriminative.
+    mean-subtracted average spike count.  Uses fully vectorised GPU tensor
+    operations — no CPU data transfer or Python loops over classes.
 
     Parameters
     ----------
@@ -73,26 +74,24 @@ def calculate_feature_importance(
     -------
     importance : Tensor, shape ``(n_neurons,)`` on the same device as *spikes*.
     """
-    spikes_cpu = spikes.detach().cpu()
-    labels_np = labels.detach().cpu().numpy()
-    unique_classes = np.unique(labels_np)
+    T, B, N = spikes.shape
+    num_classes = int(labels.max().item()) + 1
 
-    per_class_means: list[torch.Tensor] = []
-    for cls in unique_classes:
-        idx = np.where(labels_np == cls)[0]
-        if len(idx) == 0:
-            per_class_means.append(torch.zeros(spikes_cpu.shape[2]))
-            continue
-        class_spikes = spikes_cpu[:, idx, :]
-        # Average total spikes per neuron across time and trials
-        per_class_means.append(class_spikes.sum(dim=(0, 1)) / len(idx))
+    # Sum spikes over time for each sample: (B, N)
+    spike_sums = spikes.float().sum(dim=0)
 
-    if not per_class_means:
-        return torch.zeros(spikes.shape[2], device=spikes.device)
+    # One-hot class membership: (B, C)
+    one_hot = torch.zeros(B, num_classes, device=spikes.device)
+    one_hot.scatter_(1, labels.unsqueeze(1), 1.0)
 
-    stacked = torch.stack(per_class_means)           # (n_classes, n_neurons)
-    global_mean = stacked.mean(dim=0)                # (n_neurons,)
-    deviations = stacked - global_mean               # (n_classes, n_neurons)
-    importance = deviations.std(dim=0)               # (n_neurons,)
+    # Count of samples per class: (C,)
+    class_counts = one_hot.sum(dim=0).clamp(min=1.0)
 
-    return importance.to(spikes.device)
+    # Per-class mean spike count: (C, N)
+    # one_hot.T @ spike_sums = (C, B) @ (B, N) → (C, N)
+    per_class_means = (one_hot.T @ spike_sums) / class_counts.unsqueeze(1)
+
+    # Discriminative importance = std of per-class means across classes
+    importance = per_class_means.std(dim=0)  # (N,)
+
+    return importance

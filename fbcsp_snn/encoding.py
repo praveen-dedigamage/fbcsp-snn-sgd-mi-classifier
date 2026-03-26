@@ -7,6 +7,49 @@ import torch
 from fbcsp_snn import DEVICE
 
 
+@torch.jit.script
+def _encode_segment(
+    signal: torch.Tensor,
+    base_thresh: float,
+    adapt_inc: float,
+    decay: float,
+) -> torch.Tensor:
+    """JIT-compiled adaptive-threshold encoding for a single segment.
+
+    Compiles the time-step loop to TorchScript, eliminating CPython interpreter
+    overhead for each of the T iterations.  All batch and channel operations
+    inside the loop remain parallelised on the GPU.
+
+    Parameters
+    ----------
+    signal : float32 Tensor, shape ``(T, n_trials, n_components)``
+        Pre-permuted projected signal.
+    base_thresh, adapt_inc, decay:
+        Encoding hyperparameters (see :func:`encode_to_spikes`).
+
+    Returns
+    -------
+    spikes : Tensor of same shape as *signal* with binary values.
+    """
+    T: int = signal.shape[0]
+    n_trials: int = signal.shape[1]
+    n_components: int = signal.shape[2]
+
+    spikes = torch.zeros_like(signal)
+    thresholds = torch.full(
+        (n_trials, n_components), base_thresh,
+        dtype=signal.dtype, device=signal.device,
+    )
+
+    for t in range(1, T):
+        delta = (signal[t] - signal[t - 1]).abs()
+        fired = (delta > thresholds).to(signal.dtype)
+        spikes[t] = fired
+        thresholds = thresholds * decay + fired * adapt_inc
+
+    return spikes
+
+
 def encode_to_spikes(
     projected_data: Dict[Union[Tuple[int, int], int], "np.ndarray"],  # noqa: F821
     base_thresh: float = 0.02,
@@ -21,6 +64,10 @@ def encode_to_spikes(
     per-channel adaptive threshold.  When the delta exceeds the threshold a
     spike is emitted and the threshold is bumped up; otherwise the threshold
     decays exponentially.
+
+    The inner time-step loop is compiled with :func:`torch.jit.script` to
+    eliminate Python interpreter overhead while all batch/channel operations
+    remain fully parallel on the GPU.
 
     Parameters
     ----------
@@ -50,21 +97,11 @@ def encode_to_spikes(
     spike_segments: list[torch.Tensor] = []
 
     for key in sorted(projected_data.keys()):
-        data = projected_data[key]  # (trials, components, time)
-        n_trials, n_components, n_time = data.shape
+        # Transfer numpy array to GPU as a contiguous float32 tensor
+        signal = torch.as_tensor(
+            projected_data[key], dtype=torch.float32, device=device
+        ).permute(2, 0, 1).contiguous()  # (T, trials, components)
 
-        # Permute to (time, trials, components) for time-step iteration
-        signal = torch.tensor(data, dtype=torch.float32, device=device).permute(2, 0, 1)
-
-        spikes = torch.zeros_like(signal)
-        thresholds = torch.full((n_trials, n_components), base_thresh, device=device)
-
-        for t in range(1, n_time):
-            delta = (signal[t] - signal[t - 1]).abs()
-            fired = (delta > thresholds).float()
-            spikes[t] = fired
-            thresholds = thresholds * decay + fired * adapt_inc
-
-        spike_segments.append(spikes)
+        spike_segments.append(_encode_segment(signal, base_thresh, adapt_inc, decay))
 
     return torch.cat(spike_segments, dim=2)

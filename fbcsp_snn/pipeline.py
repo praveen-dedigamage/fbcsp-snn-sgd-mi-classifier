@@ -196,7 +196,7 @@ def run_train(cfg: Config, base_dir: Path, device: torch.device = DEVICE) -> Non
     # Bandpass filtering (done once, outside the fold loop)
     X_train_filtered = _multiband_filter(X_train_all, cfg.freq_bands)
     X_test_filtered = _multiband_filter(X_test_all, cfg.freq_bands)
-    y_test_tensor = torch.tensor(y_test_raw - 1, dtype=torch.long, device=device)
+    y_test_tensor = torch.tensor(y_test_raw - 1, dtype=torch.long).to(device, non_blocking=True)
 
     # ── Cross-validation ──────────────────────────────────────────────────────
     kfold = StratifiedKFold(n_splits=cfg.n_folds, shuffle=True, random_state=42)
@@ -268,6 +268,11 @@ def run_train(cfg: Config, base_dir: Path, device: torch.device = DEVICE) -> Non
             beta=cfg.beta,
             dropout_prob=cfg.dropout_prob,
         ).to(device)
+
+        # torch.compile fuses the time-step loop and FC+LIF ops into optimised
+        # CUDA kernels, giving a significant speedup after the first warm-up epoch.
+        if device.type == "cuda":
+            model = torch.compile(model, mode="reduce-overhead")
 
         best_model, _ = train(
             model, spk_tr, y_tr_t, spk_val, y_val_t,
