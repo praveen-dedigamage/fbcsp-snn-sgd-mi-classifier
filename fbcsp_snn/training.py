@@ -8,7 +8,7 @@ from typing import Dict, List, Optional
 import torch
 import torch.nn as nn
 
-from fbcsp_snn import setup_logger
+from fbcsp_snn import DEVICE, setup_logger
 from fbcsp_snn.losses import create_target_spikes, van_rossum_loss
 from fbcsp_snn.model import SNNClassifier
 
@@ -92,15 +92,15 @@ def compute_metrics(
     preds = class_scores.argmax(dim=1)
     accuracy = float((preds == y_true).sum().item() / batch_size)
 
+    # Vectorised incorrect-spike ratio — no Python loop over batch samples
     total_spikes = summed.sum().item()
-    incorrect_spikes = 0.0
-    for i in range(batch_size):
-        start = int(y_true[i].item()) * population_per_class
-        end = start + population_per_class
-        non_target = summed[i].clone()
-        non_target[start:end] = 0.0
-        incorrect_spikes += non_target.sum().item()
 
+    pop_range = torch.arange(population_per_class, device=y_true.device)
+    target_cols = (y_true * population_per_class).unsqueeze(1) + pop_range  # (B, pop)
+    target_mask = torch.zeros_like(summed, dtype=torch.bool)
+    target_mask.scatter_(1, target_cols, True)
+
+    incorrect_spikes = summed[~target_mask].sum().item()
     incorrect_ratio = incorrect_spikes / (total_spikes + 1e-6)
     return accuracy, incorrect_ratio
 
@@ -137,6 +137,10 @@ def train(
 ) -> tuple[SNNClassifier, TrainingHistory]:
     """Train the SNN with Van Rossum supervised loss and return the best model.
 
+    Uses Automatic Mixed Precision (AMP) on CUDA devices for faster training.
+    The forward pass and loss are computed in float16 where safe; gradients are
+    scaled to prevent underflow.
+
     Parameters
     ----------
     model:
@@ -165,7 +169,18 @@ def train(
     best_model : SNNClassifier with weights from the epoch of highest val accuracy.
     history : :class:`TrainingHistory`
     """
+    device = X_train.device
+    use_amp = device.type == "cuda"
+
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
+    # GradScaler prevents gradient underflow when training in float16
+    if use_amp:
+        try:
+            scaler = torch.amp.GradScaler(device_type="cuda")  # PyTorch >= 2.2
+        except TypeError:
+            scaler = torch.cuda.amp.GradScaler()               # PyTorch < 2.2
+    else:
+        scaler = None
 
     num_classes = int(y_train.max().item()) + 1
     population_per_class = model.population_per_class
@@ -187,25 +202,34 @@ def train(
     for epoch in range(1, epochs + 1):
         t0 = time.time()
 
-        # ── Training step ──────────────────────────────────────────────────
+        # ── Training step (with AMP) ───────────────────────────────────────
         model.train()
-        optimizer.zero_grad()
-        out_spk, _, _, _ = model(X_train)
-        loss = van_rossum_loss(out_spk, train_targets)
-        loss.backward()
-        optimizer.step()
+        optimizer.zero_grad(set_to_none=True)  # set_to_none=True is faster than zero_grad()
 
-        train_acc, train_inc = compute_metrics(
-            out_spk.detach(), y_train, num_classes, population_per_class
-        )
+        with torch.autocast(device_type=device.type, enabled=use_amp):
+            out_spk, _, _, _ = model(X_train)
+            loss = van_rossum_loss(out_spk, train_targets)
+
+        if scaler is not None:
+            scaler.scale(loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
+        else:
+            loss.backward()
+            optimizer.step()
+
+        with torch.no_grad():
+            train_acc, train_inc = compute_metrics(
+                out_spk.detach().float(), y_train, num_classes, population_per_class
+            )
 
         # ── Validation step ────────────────────────────────────────────────
         model.eval()
-        with torch.no_grad():
+        with torch.no_grad(), torch.autocast(device_type=device.type, enabled=use_amp):
             val_spk, _, _, _ = model(X_val)
             val_loss = van_rossum_loss(val_spk, val_targets)
             val_acc, val_inc = compute_metrics(
-                val_spk, y_val, num_classes, population_per_class
+                val_spk.float(), y_val, num_classes, population_per_class
             )
 
         history.train_losses.append(loss.item())

@@ -12,6 +12,7 @@ from sklearn.model_selection import StratifiedKFold
 from fbcsp_snn import DEVICE, setup_logger
 from fbcsp_snn.config import Config
 from fbcsp_snn.data import load_data
+from fbcsp_snn.datasets import load_moabb_subject
 from fbcsp_snn.encoding import encode_to_spikes
 from fbcsp_snn.evaluation import calculate_feature_importance, evaluate
 from fbcsp_snn.model import SNNClassifier
@@ -181,22 +182,32 @@ def run_train(cfg: Config, base_dir: Path, device: torch.device = DEVICE) -> Non
     logger.info("Subject %d — results → %s", cfg.subject_id, results_dir)
 
     # ── Load data ─────────────────────────────────────────────────────────────
-    X_train_raw, y_train_raw = load_data(data_dir, cfg.subject_id, _SESSION_TRAIN)
-    X_test_raw, y_test_raw = load_data(data_dir, cfg.subject_id, _SESSION_EVAL)
-
-    # Keep only labelled MI trials (label > 0)
-    train_mask = y_train_raw > 0
-    X_train_all = X_train_raw[train_mask]
-    y_train_all = y_train_raw[train_mask]
-
-    test_mask = y_test_raw > 0
-    X_test_all = X_test_raw[test_mask]
-    y_test_raw = y_test_raw[test_mask]
+    if cfg.source == "moabb":
+        logger.info(
+            "Data source: MOABB / %s  (tmin=%.1f, tmax=%.1f)",
+            cfg.moabb_dataset, cfg.tmin, cfg.tmax,
+        )
+        X_train_all, y_train_all, X_test_all, y_test_raw = load_moabb_subject(
+            cfg.moabb_dataset,
+            cfg.subject_id,
+            tmin=cfg.tmin,
+            tmax=cfg.tmax,
+            n_classes=cfg.n_classes,
+        )
+    else:
+        logger.info("Data source: file  (%s)", data_dir)
+        X_train_raw, y_train_raw = load_data(data_dir, cfg.subject_id, _SESSION_TRAIN)
+        X_test_raw, y_test_raw = load_data(data_dir, cfg.subject_id, _SESSION_EVAL)
+        # Keep only labelled MI trials (label > 0 = rest class)
+        X_train_all = X_train_raw[y_train_raw > 0]
+        y_train_all = y_train_raw[y_train_raw > 0]
+        X_test_all = X_test_raw[y_test_raw > 0]
+        y_test_raw = y_test_raw[y_test_raw > 0]
 
     # Bandpass filtering (done once, outside the fold loop)
     X_train_filtered = _multiband_filter(X_train_all, cfg.freq_bands)
     X_test_filtered = _multiband_filter(X_test_all, cfg.freq_bands)
-    y_test_tensor = torch.tensor(y_test_raw - 1, dtype=torch.long, device=device)
+    y_test_tensor = torch.tensor(y_test_raw - 1, dtype=torch.long).to(device, non_blocking=True)
 
     # ── Cross-validation ──────────────────────────────────────────────────────
     kfold = StratifiedKFold(n_splits=cfg.n_folds, shuffle=True, random_state=42)
@@ -268,6 +279,11 @@ def run_train(cfg: Config, base_dir: Path, device: torch.device = DEVICE) -> Non
             beta=cfg.beta,
             dropout_prob=cfg.dropout_prob,
         ).to(device)
+
+        # torch.compile fuses the time-step loop and FC+LIF ops into optimised
+        # CUDA kernels, giving a significant speedup after the first warm-up epoch.
+        if device.type == "cuda":
+            model = torch.compile(model, mode="reduce-overhead")
 
         best_model, _ = train(
             model, spk_tr, y_tr_t, spk_val, y_val_t,
@@ -386,10 +402,22 @@ def run_infer(
         y_t = torch.tensor(y_raw - 1, dtype=torch.long, device=device)
         return spk, y_t
 
+    # ── Load raw data (source-aware) ──────────────────────────────────────────
+    if cfg.source == "moabb":
+        X_train_raw, y_train_raw, X_test_raw, y_test_raw = load_moabb_subject(
+            cfg.moabb_dataset, cfg.subject_id,
+            tmin=cfg.tmin, tmax=cfg.tmax, n_classes=cfg.n_classes,
+        )
+    else:
+        X_test_full, y_test_full = load_data(data_dir, cfg.subject_id, _SESSION_EVAL)
+        X_test_raw = X_test_full[y_test_full > 0]
+        y_test_raw = y_test_full[y_test_full > 0]
+        X_train_full, y_train_full = load_data(data_dir, cfg.subject_id, _SESSION_TRAIN)
+        X_train_raw = X_train_full[y_train_full > 0]
+        y_train_raw = y_train_full[y_train_full > 0]
+
     # ── Test set ──────────────────────────────────────────────────────────────
-    X_test, y_test = load_data(data_dir, cfg.subject_id, _SESSION_EVAL)
-    test_mask = y_test > 0
-    spk_test, y_test_t = _preprocess_and_encode(X_test[test_mask], y_test[test_mask])
+    spk_test, y_test_t = _preprocess_and_encode(X_test_raw, y_test_raw)
 
     test_acc, cm = evaluate(model, spk_test, y_test_t, device)
     logger.info("Test accuracy (fold %d): %.4f", fold, test_acc)
@@ -401,9 +429,7 @@ def run_infer(
     plot_spike_probability_heatmap(spk_test, y_test_t, cfg.subject_id, fold, results_dir, tag=tag)
 
     # ── Training set ──────────────────────────────────────────────────────────
-    X_train, y_train = load_data(data_dir, cfg.subject_id, _SESSION_TRAIN)
-    train_mask = y_train > 0
-    spk_train, y_train_t = _preprocess_and_encode(X_train[train_mask], y_train[train_mask])
+    spk_train, y_train_t = _preprocess_and_encode(X_train_raw, y_train_raw)
 
     tag_tr = f"train_fold{fold}"
     plot_spike_count_difference(spk_train, y_train_t, cfg.subject_id, fold, results_dir, tag=tag_tr)

@@ -24,6 +24,11 @@ def bandpass_filter(
 ) -> np.ndarray:
     """Apply a zero-phase Butterworth bandpass filter to EEG trials.
 
+    All trials and channels are filtered in a single :func:`scipy.signal.filtfilt`
+    call by reshaping ``(n_trials, n_channels, n_samples)`` to
+    ``(n_trials * n_channels, n_samples)``.  This eliminates the nested Python
+    loop and lets SciPy/BLAS process every signal in one vectorised pass.
+
     Parameters
     ----------
     data:
@@ -42,11 +47,11 @@ def bandpass_filter(
     nyquist = 0.5 * fs
     b, a = butter(order, [lowcut / nyquist, highcut / nyquist], btype="band")
 
-    filtered = np.empty_like(data)
-    for trial in range(data.shape[0]):
-        for ch in range(data.shape[1]):
-            filtered[trial, ch] = filtfilt(b, a, data[trial, ch])
-    return filtered
+    n_trials, n_channels, n_samples = data.shape
+    # filtfilt operates along axis=-1 by default; flatten the leading two dims
+    # so every trial-channel pair is filtered in one vectorised call.
+    flat = data.reshape(n_trials * n_channels, n_samples)
+    return filtfilt(b, a, flat).reshape(n_trials, n_channels, n_samples)
 
 
 # ── Helpers shared by both CSP classes ───────────────────────────────────────
@@ -55,7 +60,8 @@ def bandpass_filter(
 def _normalised_cov(X: np.ndarray) -> np.ndarray:
     """Return trace-normalised covariance matrices for a set of trials."""
     covs = np.array([np.cov(trial) for trial in X])
-    return covs / covs.trace(axis1=1, axis2=2, keepdims=True)
+    traces = covs.trace(axis1=1, axis2=2)[:, np.newaxis, np.newaxis]
+    return covs / traces
 
 
 def _regularised(cov: np.ndarray, reg_lambda: float) -> np.ndarray:
