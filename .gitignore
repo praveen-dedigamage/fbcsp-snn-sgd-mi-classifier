@@ -18,6 +18,12 @@
 **/*.fdt
 **/*.asv
 
+# Allow results directory — unblock small analysis files but keep large binaries ignored
+!Results/
+!Results/**/*.json
+!Results/**/*.csv
+!Results/**/*.png
+
 
 
 # ======================
