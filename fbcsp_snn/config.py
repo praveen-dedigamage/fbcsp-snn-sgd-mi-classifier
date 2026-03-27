@@ -131,6 +131,11 @@ def parse_args() -> argparse.Namespace:
     train_p.add_argument(
         "--early-stopping-warmup", type=int, default=100, metavar="N"
     )
+    train_p.add_argument(
+        "--fold-id", type=int, default=None, metavar="N",
+        help="Run only this fold (1-based). Omit to run all folds sequentially. "
+             "Use with SLURM --array=1-<n-folds> to run folds as parallel jobs.",
+    )
 
     # ── infer subcommand ──────────────────────────────────────────────────────
     infer_p = sub.add_parser(
@@ -150,11 +155,36 @@ def parse_args() -> argparse.Namespace:
         help="Sample index for single-sample visualizations",
     )
 
+    # ── aggregate subcommand ──────────────────────────────────────────────────
+    agg_p = sub.add_parser(
+        "aggregate",
+        help="Collect per-fold artifacts and produce summary CSV + confusion-matrix plots",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    agg_p.add_argument("--subject-id", type=int, default=1, metavar="N")
+    agg_p.add_argument("--results-dir", type=Path, default=None, metavar="PATH")
+    agg_p.add_argument("--n-folds", type=int, default=10)
+    agg_p.add_argument(
+        "--n-classes", type=int, default=None,
+        help="Number of classes (auto-detected from saved artifacts when omitted)",
+    )
+
     return root.parse_args()
 
 
 def config_from_args(args: argparse.Namespace) -> Config:
     """Build a :class:`Config` from parsed CLI arguments."""
+    if args.mode == "aggregate":
+        # Minimal config — only subject routing and fold count are needed
+        n_classes = args.n_classes if args.n_classes is not None else 4
+        cfg = Config(
+            subject_id=args.subject_id,
+            results_dir=args.results_dir,
+            n_folds=args.n_folds,
+            n_classes=n_classes,
+        )
+        return cfg
+
     freq_bands: List[Tuple[int, int]] = ast.literal_eval(args.freq_bands)
 
     # Resolve n_classes: auto-detect from registry for MOABB sources so that

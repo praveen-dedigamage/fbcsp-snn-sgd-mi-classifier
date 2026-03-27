@@ -69,8 +69,9 @@ def _save_fold_artifacts(
     csp: PairwiseCSP,
     cfg: Config,
     top_indices: torch.Tensor,
+    metrics: dict,
 ) -> None:
-    """Persist model weights, CSP object, and pipeline metadata for one fold."""
+    """Persist model weights, CSP object, pipeline metadata, and fold metrics."""
     torch.save(
         model.state_dict(),
         results_dir / f"snn_model_subject{subject_id}_fold{fold}.pth",
@@ -104,6 +105,7 @@ def _save_fold_artifacts(
             "reg_lambda": csp.reg_lambda,
             "selected_classes": csp.selected_classes,
         },
+        "metrics": metrics,
     }
     with open(
         results_dir / f"pipeline_params_subject{subject_id}_fold{fold}.json", "w"
@@ -172,7 +174,12 @@ def _encode_and_prune(
 # ── Training pipeline ─────────────────────────────────────────────────────────
 
 
-def run_train(cfg: Config, base_dir: Path, device: torch.device = DEVICE) -> None:
+def run_train(
+    cfg: Config,
+    base_dir: Path,
+    device: torch.device = DEVICE,
+    fold_id: int = None,
+) -> None:
     """Run stratified k-fold cross-validation and persist fold artifacts.
 
     For each fold the pipeline:
@@ -223,6 +230,15 @@ def run_train(cfg: Config, base_dir: Path, device: torch.device = DEVICE) -> Non
     # ── Cross-validation ──────────────────────────────────────────────────────
     kfold = StratifiedKFold(n_splits=cfg.n_folds, shuffle=True, random_state=42)
 
+    all_folds = list(enumerate(kfold.split(X_train_filtered, y_train_all), start=1))
+    if fold_id is not None:
+        if fold_id < 1 or fold_id > cfg.n_folds:
+            raise ValueError(f"--fold-id must be between 1 and {cfg.n_folds}, got {fold_id}")
+        folds_to_run = [all_folds[fold_id - 1]]
+        logger.info("Running single fold %d/%d (parallel mode)", fold_id, cfg.n_folds)
+    else:
+        folds_to_run = all_folds
+
     train_accs: List[float] = []
     val_accs: List[float] = []
     test_accs_fp32: List[float] = []
@@ -242,9 +258,7 @@ def run_train(cfg: Config, base_dir: Path, device: torch.device = DEVICE) -> Non
         )
     csp_n_components = n_bands * csp_comps_per_band
 
-    for fold_idx, (tr_idx, val_idx) in enumerate(
-        kfold.split(X_train_filtered, y_train_all), start=1
-    ):
+    for fold_idx, (tr_idx, val_idx) in folds_to_run:
         logger.info("Fold %d/%d", fold_idx, cfg.n_folds)
 
         X_tr, y_tr = X_train_filtered[tr_idx], y_train_all[tr_idx]
@@ -352,7 +366,17 @@ def run_train(cfg: Config, base_dir: Path, device: torch.device = DEVICE) -> Non
         plot_neuron_traces(mem_hid, mem_out, spk_hid, spk_out, cfg.subject_id, fold_idx, results_dir)
 
         # ── Persist artifacts ─────────────────────────────────────────────────
-        _save_fold_artifacts(results_dir, cfg.subject_id, fold_idx, best_model, csp, cfg, top_indices)
+        _save_fold_artifacts(
+            results_dir, cfg.subject_id, fold_idx, best_model, csp, cfg, top_indices,
+            metrics={
+                "train_acc": tr_acc,
+                "val_acc": val_acc,
+                "test_acc_fp32": test_acc_fp32,
+                "test_acc_int8": test_acc_int8,
+                "cm_fp32": cm_fp32.tolist(),
+                "cm_int8": cm_int8.tolist(),
+            },
+        )
 
         train_accs.append(tr_acc)
         val_accs.append(val_acc)
@@ -364,24 +388,70 @@ def run_train(cfg: Config, base_dir: Path, device: torch.device = DEVICE) -> Non
             fold_idx, tr_acc, val_acc, test_acc_fp32, test_acc_int8,
         )
 
-    # ── Aggregate results ─────────────────────────────────────────────────────
+    # ── Aggregate results (only when all folds ran together) ──────────────────
+    if fold_id is None:
+        run_aggregate(cfg, base_dir)
+
+
+# ── Aggregate pipeline ────────────────────────────────────────────────────────
+
+
+def run_aggregate(cfg: Config, base_dir: Path) -> None:
+    """Read per-fold artifacts and produce summary CSV + confusion-matrix plots.
+
+    Works whether folds were run sequentially (``run_train`` with no
+    ``fold_id``) or as independent parallel jobs (``--fold-id N``).
+    """
+    results_dir = _resolve_results_dir(cfg, base_dir)
+
+    test_accs_fp32: List[float] = []
+    test_accs_int8: List[float] = []
+    total_cm_fp32 = np.zeros((cfg.n_classes, cfg.n_classes), dtype=int)
+    total_cm_int8 = np.zeros((cfg.n_classes, cfg.n_classes), dtype=int)
+    missing: List[int] = []
+
+    for fold in range(1, cfg.n_folds + 1):
+        params_path = results_dir / f"pipeline_params_subject{cfg.subject_id}_fold{fold}.json"
+        if not params_path.exists():
+            missing.append(fold)
+            continue
+        with open(params_path) as fh:
+            params = json.load(fh)
+        m = params.get("metrics", {})
+        if not m:
+            logger.warning("Fold %d artifact has no metrics (re-run that fold)", fold)
+            missing.append(fold)
+            continue
+        test_accs_fp32.append(m["test_acc_fp32"])
+        test_accs_int8.append(m["test_acc_int8"])
+        total_cm_fp32 += np.array(m["cm_fp32"], dtype=int)
+        total_cm_int8 += np.array(m["cm_int8"], dtype=int)
+
+    if missing:
+        logger.warning("Missing / incomplete folds: %s — aggregate is partial", missing)
+    if not test_accs_fp32:
+        raise RuntimeError(
+            f"No fold artifacts found in {results_dir}. Run training first."
+        )
+
     class_names = [f"Class {i + 1}" for i in range(cfg.n_classes)]
     plot_confusion_matrix(total_cm_fp32, class_names, cfg.subject_id, "FP32", results_dir)
     plot_confusion_matrix(total_cm_int8, class_names, cfg.subject_id, "INT8", results_dir)
 
     summary_path = results_dir / f"accuracies_subject{cfg.subject_id}.csv"
+    completed_folds = [f for f in range(1, cfg.n_folds + 1) if f not in missing]
     with open(summary_path, "w") as fh:
         fh.write("fold,fp32_acc,int8_acc\n")
-        for i, (fp32, int8) in enumerate(zip(test_accs_fp32, test_accs_int8), start=1):
-            fh.write(f"{i},{fp32},{int8}\n")
+        for fold, fp32, int8 in zip(completed_folds, test_accs_fp32, test_accs_int8):
+            fh.write(f"{fold},{fp32},{int8}\n")
 
     logger.info(
-        "Subject %d summary — avg test FP32=%.4f  INT8=%.4f",
-        cfg.subject_id,
-        float(np.mean(test_accs_fp32)),
-        float(np.mean(test_accs_int8)),
+        "Subject %d summary (%d/%d folds) — FP32=%.4f±%.4f  INT8=%.4f±%.4f",
+        cfg.subject_id, len(test_accs_fp32), cfg.n_folds,
+        float(np.mean(test_accs_fp32)), float(np.std(test_accs_fp32)),
+        float(np.mean(test_accs_int8)), float(np.std(test_accs_int8)),
     )
-    logger.info("Accuracy CSV saved to %s", summary_path)
+    logger.info("Accuracy CSV → %s", summary_path)
 
 
 # ── Inference pipeline ────────────────────────────────────────────────────────
@@ -424,7 +494,7 @@ def run_infer(
 
     # ── Load raw data (source-aware) ──────────────────────────────────────────
     if cfg.source == "moabb":
-        X_train_raw, y_train_raw, X_test_raw, y_test_raw = load_moabb_subject(
+        X_train_raw, y_train_raw, X_test_raw, y_test_raw, _ = load_moabb_subject(
             cfg.moabb_dataset, cfg.subject_id,
             tmin=cfg.tmin, tmax=cfg.tmax, n_classes=cfg.n_classes,
         )

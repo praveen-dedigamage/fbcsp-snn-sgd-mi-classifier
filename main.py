@@ -19,7 +19,7 @@ from pathlib import Path
 
 from fbcsp_snn import DEVICE, setup_logger
 from fbcsp_snn.config import config_from_args, parse_args
-from fbcsp_snn.pipeline import run_infer, run_train
+from fbcsp_snn.pipeline import run_aggregate, run_infer, run_train
 
 logger = setup_logger(__name__)
 
@@ -35,9 +35,11 @@ def main() -> None:
     logger.info("Subject: %d", cfg.subject_id)
 
     if args.mode == "train":
-        run_train(cfg, base_dir=BASE_DIR, device=DEVICE)
+        run_train(cfg, base_dir=BASE_DIR, device=DEVICE, fold_id=getattr(args, "fold_id", None))
     elif args.mode == "infer":
         run_infer(cfg, base_dir=BASE_DIR, fold=args.fold, device=DEVICE)
+    elif args.mode == "aggregate":
+        run_aggregate(cfg, base_dir=BASE_DIR)
 
 
 if __name__ == "__main__":
