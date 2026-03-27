@@ -1,0 +1,7 @@
+{
+  "type": "session",
+  "train_session": "0train",
+  "eval_sessions": [
+    "1test"
+  ]
+}
