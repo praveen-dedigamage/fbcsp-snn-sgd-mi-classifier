@@ -316,8 +316,11 @@ def run_train(
 
         # torch.compile fuses ops into optimised CUDA kernels (Linux only;
         # requires Triton which is not available on Windows).
+        # mode="default" is used instead of "reduce-overhead" because the latter
+        # enables CUDA Graphs, which conflict with snntorch's init_leaky() creating
+        # new membrane-state tensors on every forward pass.
         if device.type == "cuda" and _triton_available():
-            model = torch.compile(model, mode="reduce-overhead")
+            model = torch.compile(model, mode="default")
 
         best_model, _ = train(
             model, spk_tr, y_tr_t, spk_val, y_val_t,
