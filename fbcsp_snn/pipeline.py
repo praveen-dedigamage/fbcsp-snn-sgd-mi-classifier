@@ -36,6 +36,15 @@ _SESSION_TRAIN = "T"
 _SESSION_EVAL = "E"
 
 
+def _triton_available() -> bool:
+    """Return True only if Triton is importable (Linux; not available on Windows)."""
+    try:
+        import triton  # noqa: F401
+        return True
+    except ImportError:
+        return False
+
+
 # ── Path helpers ──────────────────────────────────────────────────────────────
 
 
@@ -291,9 +300,9 @@ def run_train(cfg: Config, base_dir: Path, device: torch.device = DEVICE) -> Non
             dropout_prob=cfg.dropout_prob,
         ).to(device)
 
-        # torch.compile fuses the time-step loop and FC+LIF ops into optimised
-        # CUDA kernels, giving a significant speedup after the first warm-up epoch.
-        if device.type == "cuda":
+        # torch.compile fuses ops into optimised CUDA kernels (Linux only;
+        # requires Triton which is not available on Windows).
+        if device.type == "cuda" and _triton_available():
             model = torch.compile(model, mode="reduce-overhead")
 
         best_model, _ = train(

@@ -175,10 +175,7 @@ def train(
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
     # GradScaler prevents gradient underflow when training in float16
     if use_amp:
-        try:
-            scaler = torch.amp.GradScaler(device_type="cuda")  # PyTorch >= 2.2
-        except TypeError:
-            scaler = torch.cuda.amp.GradScaler()               # PyTorch < 2.2
+        scaler = torch.amp.GradScaler("cuda")
     else:
         scaler = None
 
