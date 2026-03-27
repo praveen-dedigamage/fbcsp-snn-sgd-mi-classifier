@@ -1,0 +1,23 @@
+# Core ML / SNN
+# Install PyTorch separately with the correct CUDA wheel for your system:
+#   https://pytorch.org/get-started/locally/
+# e.g. Windows CUDA 12.x:  pip install torch --index-url https://download.pytorch.org/whl/cu124
+# e.g. Puhti (module):     module load pytorch/2.4
+torch>=2.0
+snntorch>=0.9
+
+# EEG data / public benchmarks
+moabb>=1.5
+mne>=1.0
+
+# Numerics / signal processing
+numpy>=2.0,<2.1
+scipy>=1.9
+scikit-learn>=1.6
+
+# I/O
+h5py>=3.0
+
+# Visualisation
+matplotlib>=3.6
+seaborn>=0.12

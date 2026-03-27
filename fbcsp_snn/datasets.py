@@ -108,7 +108,8 @@ def _normalise_labels(y_str: np.ndarray, n_classes: int) -> np.ndarray:
     ----------
     y_str : ndarray of str, shape ``(n_trials,)``
     n_classes : int
-        Expected number of classes (used only for a sanity-check warning).
+        Expected number of classes.  Raises :exc:`ValueError` if the actual
+        number of unique labels in the data does not match.
 
     Returns
     -------
@@ -116,8 +117,10 @@ def _normalise_labels(y_str: np.ndarray, n_classes: int) -> np.ndarray:
     """
     unique = sorted(np.unique(y_str))
     if len(unique) != n_classes:
-        logger.warning(
-            "Expected %d classes but found %d: %s", n_classes, len(unique), unique
+        raise ValueError(
+            f"Dataset has {len(unique)} classes {unique} but --n-classes {n_classes} "
+            f"was requested.  Pass --n-classes {len(unique)} or omit --n-classes to "
+            f"auto-detect from the dataset registry."
         )
     label_map = {lbl: i + 1 for i, lbl in enumerate(unique)}
     logger.info("Label map: %s", label_map)
@@ -134,7 +137,7 @@ def load_moabb_subject(
     tmax: float = 3.5,
     n_classes: int = 4,
     resample_hz: float = 250.0,
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, dict]:
     """Download (if needed) and load one subject from a MOABB dataset.
 
     Data are downloaded automatically to ``~/mne_data/`` on first call and
@@ -168,6 +171,12 @@ def load_moabb_subject(
     y_train : int64 ndarray, shape ``(n_train,)``   labels in ``[1, n_classes]``
     X_eval  : ndarray, shape ``(n_eval,  n_channels, n_samples)``
     y_eval  : int64 ndarray, shape ``(n_eval,)``    labels in ``[1, n_classes]``
+    split_info : dict
+        Serialisable description of the train/eval split so callers can save
+        it alongside model artifacts for reproducibility.  For session-based
+        splits: ``{"type": "session", "train_session": ..., "eval_sessions": [...]}``.
+        For random splits: ``{"type": "random", "random_state": 42,
+        "test_size": 0.2, "eval_indices": [...]}``.
 
     Notes
     -----
@@ -226,6 +235,11 @@ def load_moabb_subject(
         X_train, y_train = X[train_mask], y[train_mask]
         X_eval, y_eval = X[eval_mask], y[eval_mask]
 
+        split_info: dict = {
+            "type": "session",
+            "train_session": sessions[0],
+            "eval_sessions": sessions[1:],
+        }
         logger.info(
             "Session split: train='%s' (%d trials)  eval=%s (%d trials)",
             sessions[0], train_mask.sum(),
@@ -240,9 +254,15 @@ def load_moabb_subject(
         X_train, y_train = X[train_idx], y[train_idx]
         X_eval, y_eval = X[eval_idx], y[eval_idx]
 
+        split_info = {
+            "type": "random",
+            "random_state": 42,
+            "test_size": 0.2,
+            "eval_indices": eval_idx.tolist(),
+        }
         logger.info(
             "Single-session 80/20 split: train=%d trials  eval=%d trials",
             len(train_idx), len(eval_idx),
         )
 
-    return X_train, y_train, X_eval, y_eval
+    return X_train, y_train, X_eval, y_eval, split_info

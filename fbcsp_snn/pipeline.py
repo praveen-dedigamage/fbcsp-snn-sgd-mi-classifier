@@ -187,13 +187,15 @@ def run_train(cfg: Config, base_dir: Path, device: torch.device = DEVICE) -> Non
             "Data source: MOABB / %s  (tmin=%.1f, tmax=%.1f)",
             cfg.moabb_dataset, cfg.tmin, cfg.tmax,
         )
-        X_train_all, y_train_all, X_test_all, y_test_raw = load_moabb_subject(
+        X_train_all, y_train_all, X_test_all, y_test_raw, split_info = load_moabb_subject(
             cfg.moabb_dataset,
             cfg.subject_id,
             tmin=cfg.tmin,
             tmax=cfg.tmax,
             n_classes=cfg.n_classes,
         )
+        with open(results_dir / f"split_info_subject{cfg.subject_id}.json", "w") as fh:
+            json.dump(split_info, fh, indent=2)
     else:
         logger.info("Data source: file  (%s)", data_dir)
         X_train_raw, y_train_raw = load_data(data_dir, cfg.subject_id, _SESSION_TRAIN)
@@ -220,7 +222,16 @@ def run_train(cfg: Config, base_dir: Path, device: torch.device = DEVICE) -> Non
     total_cm_int8 = np.zeros((cfg.n_classes, cfg.n_classes), dtype=int)
 
     n_bands = len(cfg.freq_bands)
-    csp_n_components = n_bands * cfg.csp_components_per_band
+    n_channels = X_train_all.shape[1]
+    # CSP spatial filters are limited by the number of EEG channels;
+    # cap csp_components_per_band so datasets with fewer channels don't crash.
+    csp_comps_per_band = min(cfg.csp_components_per_band, n_channels)
+    if csp_comps_per_band != cfg.csp_components_per_band:
+        logger.warning(
+            "csp_components_per_band capped from %d to n_channels=%d",
+            cfg.csp_components_per_band, n_channels,
+        )
+    csp_n_components = n_bands * csp_comps_per_band
 
     for fold_idx, (tr_idx, val_idx) in enumerate(
         kfold.split(X_train_filtered, y_train_all), start=1

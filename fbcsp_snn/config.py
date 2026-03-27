@@ -95,7 +95,11 @@ def _add_shared_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--decay", type=float, default=0.95)
     parser.add_argument("--hidden-neurons", type=int, default=64)
     parser.add_argument("--population-per-class", type=int, default=20)
-    parser.add_argument("--n-classes", type=int, default=4)
+    parser.add_argument(
+        "--n-classes", type=int, default=None,
+        help="Number of MI classes. Auto-detected from the dataset registry when "
+             "--source=moabb and not specified; defaults to 4 for file source.",
+    )
     parser.add_argument("--beta", type=float, default=0.95)
     parser.add_argument("--dropout-prob", type=float, default=0.5)
     parser.add_argument("--feature-percentile", type=float, default=25.0)
@@ -153,6 +157,16 @@ def config_from_args(args: argparse.Namespace) -> Config:
     """Build a :class:`Config` from parsed CLI arguments."""
     freq_bands: List[Tuple[int, int]] = ast.literal_eval(args.freq_bands)
 
+    # Resolve n_classes: auto-detect from registry for MOABB sources so that
+    # 2-class datasets (Cho2017, BNCI2015_001) work without --n-classes 2.
+    if args.n_classes is not None:
+        n_classes = args.n_classes
+    elif args.source == "moabb":
+        from fbcsp_snn.datasets import _REGISTRY
+        n_classes = _REGISTRY.get(args.moabb_dataset, {}).get("default_classes", 4)
+    else:
+        n_classes = 4
+
     cfg = Config(
         source=args.source,
         moabb_dataset=args.moabb_dataset,
@@ -169,7 +183,7 @@ def config_from_args(args: argparse.Namespace) -> Config:
         decay=args.decay,
         hidden_neurons=args.hidden_neurons,
         population_per_class=args.population_per_class,
-        n_classes=args.n_classes,
+        n_classes=n_classes,
         beta=args.beta,
         dropout_prob=args.dropout_prob,
         feature_percentile=args.feature_percentile,
