@@ -53,6 +53,11 @@ class Config:
     # Feature selection (percentile of features to keep)
     feature_percentile: float = 25.0
 
+    # Robustness / hard-subject improvements
+    euclidean_alignment: bool = False     # align each session's mean cov → I before CSP
+    artifact_rejection_threshold: float = 0.0  # σ above mean ptp to reject (0 = off)
+    ledoit_wolf: bool = False             # Ledoit-Wolf shrinkage instead of sample cov
+
 
 def _add_shared_args(parser: argparse.ArgumentParser) -> None:
     # Data source
@@ -103,6 +108,32 @@ def _add_shared_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--beta", type=float, default=0.95)
     parser.add_argument("--dropout-prob", type=float, default=0.5)
     parser.add_argument("--feature-percentile", type=float, default=25.0)
+
+    # ── Hard-subject robustness options ──────────────────────────────────────
+    parser.add_argument(
+        "--euclidean-alignment",
+        action="store_true",
+        default=False,
+        help="Apply Euclidean Alignment (EA) to each set independently before CSP. "
+             "Strongly recommended for subjects with high inter-session variability "
+             "(e.g. BCI-IV-2a subjects 2, 5, 6, 9).",
+    )
+    parser.add_argument(
+        "--artifact-rejection-threshold",
+        type=float,
+        default=0.0,
+        metavar="SIGMA",
+        help="Reject training trials whose peak-to-peak amplitude exceeds "
+             "mean + SIGMA * std across trials. 0 disables rejection. "
+             "Typical value: 3.0.",
+    )
+    parser.add_argument(
+        "--ledoit-wolf",
+        action="store_true",
+        default=False,
+        help="Use Ledoit-Wolf shrinkage covariance in CSP instead of the "
+             "sample covariance. More stable for low-SNR subjects.",
+    )
 
 
 def parse_args() -> argparse.Namespace:
@@ -217,6 +248,9 @@ def config_from_args(args: argparse.Namespace) -> Config:
         beta=args.beta,
         dropout_prob=args.dropout_prob,
         feature_percentile=args.feature_percentile,
+        euclidean_alignment=args.euclidean_alignment,
+        artifact_rejection_threshold=args.artifact_rejection_threshold,
+        ledoit_wolf=args.ledoit_wolf,
     )
 
     if args.mode == "train":

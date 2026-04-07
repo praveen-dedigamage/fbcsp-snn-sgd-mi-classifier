@@ -16,7 +16,12 @@ from fbcsp_snn.datasets import load_moabb_subject
 from fbcsp_snn.encoding import encode_to_spikes
 from fbcsp_snn.evaluation import calculate_feature_importance, evaluate
 from fbcsp_snn.model import SNNClassifier
-from fbcsp_snn.preprocessing import PairwiseCSP, bandpass_filter
+from fbcsp_snn.preprocessing import (
+    PairwiseCSP,
+    bandpass_filter,
+    euclidean_alignment,
+    reject_outlier_trials,
+)
 from fbcsp_snn.quantization import quantize_csp, quantize_model
 from fbcsp_snn.training import train
 from fbcsp_snn.visualization import (
@@ -222,6 +227,17 @@ def run_train(
         X_test_all = X_test_raw[y_test_raw > 0]
         y_test_raw = y_test_raw[y_test_raw > 0]
 
+    # ── Optional robustness steps (applied on raw data before filtering) ─────
+    if cfg.artifact_rejection_threshold > 0:
+        X_train_all, y_train_all = reject_outlier_trials(
+            X_train_all, y_train_all, cfg.artifact_rejection_threshold
+        )
+
+    if cfg.euclidean_alignment:
+        logger.info("Applying Euclidean Alignment to train and eval sets independently")
+        X_train_all = euclidean_alignment(X_train_all)
+        X_test_all = euclidean_alignment(X_test_all)
+
     # Bandpass filtering (done once, outside the fold loop)
     X_train_filtered = _multiband_filter(X_train_all, cfg.freq_bands)
     X_test_filtered = _multiband_filter(X_test_all, cfg.freq_bands)
@@ -269,6 +285,7 @@ def run_train(
             n_components=csp_n_components,
             selected_classes=list(range(1, cfg.n_classes + 1)),
             reg_lambda=cfg.lambda_r,
+            use_ledoit_wolf=cfg.ledoit_wolf,
         )
         csp.fit(X_tr, y_tr)
 

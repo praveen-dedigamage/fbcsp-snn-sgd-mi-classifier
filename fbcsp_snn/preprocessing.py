@@ -12,6 +12,91 @@ from fbcsp_snn import setup_logger
 logger = setup_logger(__name__)
 
 
+# ── Euclidean Alignment ───────────────────────────────────────────────────────
+
+
+def euclidean_alignment(X: np.ndarray) -> np.ndarray:
+    """Align trial covariances to the identity matrix (Euclidean Alignment).
+
+    Computes the mean covariance **R** across all trials in *X*, then multiplies
+    each trial by **R**^{-1/2}, so the mean covariance becomes **I**.  This
+    removes inter-session and inter-subject covariance drift, which is the
+    primary cause of poor generalisation for "hard" BCI subjects.
+
+    Apply **separately** to training and evaluation sets so that each set is
+    aligned to its own mean — do NOT fit on train and apply to eval, as that
+    would leak session-level information.
+
+    Parameters
+    ----------
+    X : ndarray, shape ``(n_trials, n_channels, n_samples)``
+
+    Returns
+    -------
+    ndarray, same shape as *X*
+    """
+    covs = np.array([np.cov(trial) for trial in X])   # (n_trials, C, C)
+    R = covs.mean(axis=0)                              # mean covariance (C, C)
+
+    # R^{-1/2} via eigendecomposition (eigh guarantees real, symmetric output)
+    eigvals, eigvecs = np.linalg.eigh(R)
+    inv_sqrt = eigvecs @ np.diag(1.0 / np.sqrt(np.maximum(eigvals, 1e-10))) @ eigvecs.T
+
+    # Apply: X_aligned[i] = R^{-1/2} @ X[i]
+    aligned = np.einsum("ij,tjk->tik", inv_sqrt, X)
+    logger.debug("Euclidean alignment applied: mean cov condition %.2f → 1.00",
+                 float(np.linalg.cond(R)))
+    return aligned
+
+
+# ── Outlier trial rejection ───────────────────────────────────────────────────
+
+
+def reject_outlier_trials(
+    X: np.ndarray,
+    y: np.ndarray,
+    threshold: float = 3.0,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Remove trials whose peak-to-peak amplitude is a statistical outlier.
+
+    Computes the maximum peak-to-peak amplitude across channels for every
+    trial, then discards trials exceeding ``mean + threshold * std``.  This
+    removes epochs contaminated by EMG bursts, electrode pops, or large eye
+    movements before CSP covariance estimation.
+
+    Parameters
+    ----------
+    X : ndarray, shape ``(n_trials, n_channels, n_samples)``
+    y : ndarray, shape ``(n_trials,)``
+    threshold : float
+        Number of standard deviations above the mean beyond which a trial is
+        rejected.  Typical values: 2.5–4.0.  Set to 0 to disable.
+
+    Returns
+    -------
+    X_clean, y_clean : ndarrays with rejected trials removed
+    """
+    if threshold <= 0:
+        return X, y
+
+    # Peak-to-peak per trial: max over channels of (max_t - min_t)
+    ptp = (X.max(axis=2) - X.min(axis=2)).max(axis=1)   # (n_trials,)
+    mu, sigma = ptp.mean(), ptp.std()
+    keep = ptp < (mu + threshold * sigma)
+    n_removed = int((~keep).sum())
+
+    if n_removed:
+        logger.info(
+            "Artifact rejection: removed %d/%d trials (threshold=%.1f σ, "
+            "ptp_mean=%.2e, ptp_std=%.2e)",
+            n_removed, len(X), threshold, mu, sigma,
+        )
+    else:
+        logger.debug("Artifact rejection: no trials removed (threshold=%.1f σ)", threshold)
+
+    return X[keep], y[keep]
+
+
 # ── Bandpass filter ───────────────────────────────────────────────────────────
 
 
@@ -57,9 +142,23 @@ def bandpass_filter(
 # ── Helpers shared by both CSP classes ───────────────────────────────────────
 
 
-def _normalised_cov(X: np.ndarray) -> np.ndarray:
-    """Return trace-normalised covariance matrices for a set of trials."""
-    covs = np.array([np.cov(trial) for trial in X])
+def _normalised_cov(X: np.ndarray, use_ledoit_wolf: bool = False) -> np.ndarray:
+    """Return trace-normalised covariance matrices for a set of trials.
+
+    Parameters
+    ----------
+    X : ndarray, shape ``(n_trials, n_channels, n_samples)``
+    use_ledoit_wolf : bool
+        When *True*, use the Ledoit-Wolf shrinkage estimator instead of the
+        sample covariance.  More robust for low-SNR data or when
+        ``n_samples ≈ n_channels``.
+    """
+    if use_ledoit_wolf:
+        from sklearn.covariance import ledoit_wolf
+        # ledoit_wolf expects (n_samples, n_features), so transpose each trial
+        covs = np.array([ledoit_wolf(trial.T)[0] for trial in X])
+    else:
+        covs = np.array([np.cov(trial) for trial in X])
     traces = covs.trace(axis1=1, axis2=2)[:, np.newaxis, np.newaxis]
     return covs / traces
 
@@ -89,6 +188,9 @@ class PairwiseCSP:
         Subset of class labels to consider; defaults to all unique labels in ``y``.
     reg_lambda:
         Tikhonov regularisation coefficient applied to each covariance matrix.
+    use_ledoit_wolf:
+        Use Ledoit-Wolf shrinkage covariance instead of the sample covariance.
+        Recommended for hard subjects with low SNR.
     """
 
     def __init__(
@@ -96,10 +198,12 @@ class PairwiseCSP:
         n_components: int = 2,
         selected_classes: Optional[List[int]] = None,
         reg_lambda: float = 0.01,
+        use_ledoit_wolf: bool = False,
     ) -> None:
         self.n_components = n_components
         self.selected_classes = selected_classes
         self.reg_lambda = reg_lambda
+        self.use_ledoit_wolf = use_ledoit_wolf
         self.pairwise_filters: Dict[Tuple[int, int], np.ndarray] = {}
         self.class_pairs: List[Tuple[int, int]] = []
 
@@ -122,7 +226,7 @@ class PairwiseCSP:
             mask = (y == cl1) | (y == cl2)
             X_pair, y_pair = X[mask], y[mask]
 
-            covs = _normalised_cov(X_pair)
+            covs = _normalised_cov(X_pair, use_ledoit_wolf=self.use_ledoit_wolf)
             cov1 = _regularised(covs[y_pair == cl1].mean(axis=0), self.reg_lambda)
             cov2 = _regularised(covs[y_pair == cl2].mean(axis=0), self.reg_lambda)
 
@@ -156,11 +260,19 @@ class RestVsOneCSP:
         Number of spatial filters to retain per class.
     reg_lambda:
         Tikhonov regularisation coefficient.
+    use_ledoit_wolf:
+        Use Ledoit-Wolf shrinkage covariance instead of the sample covariance.
     """
 
-    def __init__(self, n_components: int = 2, reg_lambda: float = 0.01) -> None:
+    def __init__(
+        self,
+        n_components: int = 2,
+        reg_lambda: float = 0.01,
+        use_ledoit_wolf: bool = False,
+    ) -> None:
         self.n_components = n_components
         self.reg_lambda = reg_lambda
+        self.use_ledoit_wolf = use_ledoit_wolf
         self.filters: Dict[int, np.ndarray] = {}
         self.classes: List[int] = []
 
@@ -171,7 +283,7 @@ class RestVsOneCSP:
             mask = (y == 0) | (y == mi_class)
             X_pair, y_pair = X[mask], y[mask]
 
-            covs = _normalised_cov(X_pair)
+            covs = _normalised_cov(X_pair, use_ledoit_wolf=self.use_ledoit_wolf)
             cov_rest = _regularised(covs[y_pair == 0].mean(axis=0), self.reg_lambda)
             cov_mi = _regularised(covs[y_pair == mi_class].mean(axis=0), self.reg_lambda)
 
